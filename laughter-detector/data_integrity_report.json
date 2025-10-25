@@ -1,0 +1,24 @@
+{
+  "timestamp": "2025-10-24T20:09:51.954547",
+  "database_counts": {
+    "users": 1,
+    "limitless_keys": 1,
+    "audio_segments": 7,
+    "processed_segments": 0,
+    "laughter_detections": 1
+  },
+  "filesystem_counts": {
+    "audio_files": 7,
+    "laughter_clips": 0,
+    "temp_files": 0
+  },
+  "issues_found": 1,
+  "issues": [
+    "Laughter detections (1) but no clips generated"
+  ],
+  "summary": {
+    "total_issues": 1,
+    "critical_issues": 0,
+    "data_consistency": "NEEDS_ATTENTION"
+  }
+}
