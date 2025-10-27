@@ -7,7 +7,7 @@ results with proper validation and type safety.
 
 from typing import Optional, List
 from datetime import datetime
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, validator, Field
 from sqlalchemy import Column, String, DateTime, Float, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
@@ -79,7 +79,25 @@ class LaughterDetectionResponse(LaughterDetectionBase):
 
 class LaughterDetectionUpdate(BaseModel):
     """Model for updating laughter detection records."""
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(None, max_length=1000, description="User notes about the laughter detection")
+    
+    @validator('notes')
+    def validate_notes(cls, v):
+        """
+        Validate notes field.
+        
+        Args:
+            v: Notes value
+            
+        Returns:
+            str: Validated notes
+            
+        Raises:
+            ValueError: If notes exceed maximum length
+        """
+        if v is not None and len(v) > 1000:
+            raise ValueError("Notes must be less than 1000 characters")
+        return v
 
 
 class DailyLaughterSummary(BaseModel):
