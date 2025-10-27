@@ -173,7 +173,14 @@ async def delete_limitless_key(
         supabase = create_user_supabase_client(credentials)
         
         # Actually delete the API key row from the database (RLS will ensure user can only delete their own)
-        result = supabase.table("limitless_keys").delete().execute()
+        # Need a WHERE clause - RLS policies will limit to the user's own data
+        result = supabase.table("limitless_keys").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        
+        if not result.data:
+            # No keys found to delete
+            return {"message": "No API key found to delete"}
+        
+        logger.info(f"Deleted {len(result.data)} API key(s) for user {user['user_id']}")
         
         return {"message": "API key deleted successfully"}
         

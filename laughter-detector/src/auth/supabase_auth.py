@@ -6,6 +6,7 @@ using Supabase Auth with proper security practices.
 """
 
 import re
+import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from supabase import create_client, Client
@@ -14,6 +15,9 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 
 from ..config.settings import settings
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -261,16 +265,37 @@ class AuthService:
         """
         Get current user using Supabase's JWT token.
         
-        Creates a Supabase client with the user's token in the Authorization header,
-        which allows RLS policies to work correctly.
+        SECURITY FIX: Extract user_id from JWT and query specific user to prevent
+        authentication bypass where any valid token could return the first user in the table.
         
         Args:
             token: Supabase JWT access token
             
         Returns:
             Current user data
+            
+        Raises:
+            HTTPException: If token is invalid or user not found
         """
         try:
+            # First, decode JWT to extract user_id (without full verification since Supabase will validate)
+            try:
+                unverified_payload = jwt.get_unverified_claims(token)
+                user_id = unverified_payload.get("sub")
+                
+                if not user_id:
+                    logger.error("No user_id found in JWT token")
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid token: missing user_id"
+                    )
+            except Exception as e:
+                logger.error(f"Failed to extract user_id from JWT: {str(e)}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token format"
+                )
+            
             # Create a temporary Supabase client with the user's token
             temp_client = create_client(
                 settings.supabase_url,
@@ -280,16 +305,25 @@ class AuthService:
             # Set the Authorization header on the postgrest client
             temp_client.postgrest.auth(token)
             
-            # Fetch user data using the authenticated client (RLS will apply)
-            result = temp_client.table("users").select("id, email, created_at").limit(1).execute()
+            # SECURITY FIX: Query specific user by user_id from JWT (not just limit(1))
+            result = temp_client.table("users").select("*").eq("id", user_id).single().execute()
             
             if not result.data:
+                logger.error(f"User {user_id} not found in database")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="User not found"
                 )
             
-            user_data = result.data[0]
+            user_data = result.data
+            
+            # Verify that the JWT user_id matches the database user_id
+            if user_data.get('id') != user_id:
+                logger.error(f"User ID mismatch: JWT user_id={user_id}, DB user_id={user_data.get('id')}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication error"
+                )
             
             return {
                 "user_id": user_data['id'],
@@ -297,9 +331,10 @@ class AuthService:
                 "created_at": user_data.get('created_at', datetime.utcnow().isoformat())
             }
             
+        except HTTPException:
+            # Re-raise HTTPExceptions as-is
+            raise
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"❌ get_current_user error: {type(e).__name__}: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
