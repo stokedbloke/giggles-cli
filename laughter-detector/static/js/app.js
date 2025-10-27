@@ -377,14 +377,37 @@ class LaughterDetectorApp {
         }
     }
     
+    /**
+     * Format timestamp to user's local timezone.
+     * @param {string} timestamp - ISO timestamp string
+     * @param {string} timezone - User's IANA timezone
+     * @returns {string} Formatted time string
+     */
+    formatTimestampToTimezone(timestamp, timezone) {
+        try {
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                timeZone: timezone  // Use user's timezone
+            });
+        } catch (error) {
+            console.error('Error formatting timestamp:', error);
+            return new Date(timestamp).toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+    }
+    
     async createDetectionRow(detection) {
         const row = document.createElement('tr');
         
-        const time = new Date(detection.timestamp).toLocaleTimeString('en-US', {
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-        });
+        // Format time in user's timezone
+        const timezone = this.userTimezone || this.detectTimezone();
+        const time = this.formatTimestampToTimezone(detection.timestamp, timezone);
         
         // Fetch audio with auth and create blob URL
         const audioUrl = await this.getAudioUrl(detection.id);
