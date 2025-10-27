@@ -72,12 +72,50 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Add security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """
+    Add security headers to all responses.
+    
+    Args:
+        request: HTTP request object
+        call_next: Next middleware in chain
+        
+    Returns:
+        Response with security headers
+    """
+    response = await call_next(request)
+    
+    # Security headers to prevent XSS, clickjacking, and MIME sniffing
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    
+    # Content Security Policy (adjust for your needs)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'"
+    )
+    
+    # Remove server header (if possible)
+    response.headers.pop("Server", None)
+    
+    return response
+
+
+# Add CORS middleware with proper configuration
+ALLOWED_ORIGINS = settings.allowed_origins.split(',') if hasattr(settings, 'allowed_origins') else ["http://localhost:8000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.debug else ["https://yourdomain.com"],
+    allow_origins=ALLOWED_ORIGINS,  # Never allow all origins
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 

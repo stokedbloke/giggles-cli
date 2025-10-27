@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
+    allowed_origins: str = "http://localhost:8000"
     
     # File Storage Configuration
     upload_dir: str = "./uploads"
@@ -60,6 +61,30 @@ class Settings(BaseSettings):
         """Validate encryption key is 32 bytes for AES-256."""
         if len(v) != 64:  # Hex string is 64 characters for 32 bytes
             raise ValueError("Encryption key must be exactly 64 hex characters (32 bytes)")
+        return v
+    
+    @validator("secret_key")
+    def validate_secret_key(cls, v):
+        """
+        Validate secret key is strong enough.
+        
+        Args:
+            v: Secret key value
+            
+        Returns:
+            str: Validated secret key
+            
+        Raises:
+            ValueError: If secret key is too weak
+        """
+        if len(v) < 32:
+            raise ValueError("Secret key must be at least 32 characters")
+        
+        # Check entropy (at least 10 unique characters)
+        unique_chars = len(set(v))
+        if unique_chars < 10:
+            raise ValueError("Secret key must have sufficient entropy (at least 10 unique characters)")
+        
         return v
     
     @validator("laughter_threshold")
