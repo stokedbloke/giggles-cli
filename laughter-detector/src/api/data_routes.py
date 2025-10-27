@@ -316,28 +316,18 @@ async def delete_laughter_detection(
             )
         
         clip_path = detection_result.data[0]["clip_path"]
-        logger.info(f"📁 Clip path (encrypted): {clip_path}")
+        logger.info(f"📁 Clip path: {clip_path}")
         
-        # Decrypt the file path
-        from ..auth.encryption import encryption_service
-        try:
-            decrypted_path = encryption_service.decrypt(clip_path)
-            logger.info(f"🔓 Decrypted path: {decrypted_path}")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to decrypt clip path {clip_path}: {str(e)}")
-            decrypted_path = None
-        
-        # Delete the audio clip file if it exists
-        if decrypted_path:
-            import os
-            if os.path.exists(decrypted_path):
-                try:
-                    os.remove(decrypted_path)
-                    logger.info(f"✅ Deleted audio clip: {decrypted_path}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to delete audio clip {decrypted_path}: {str(e)}")
-            else:
-                logger.warning(f"⚠️ Audio clip file not found: {decrypted_path}")
+        # Delete the audio clip file if it exists (plaintext path, no decryption needed)
+        import os
+        if os.path.exists(clip_path):
+            try:
+                os.remove(clip_path)
+                logger.info(f"✅ Deleted audio clip: {clip_path}")
+            except Exception as e:
+                logger.error(f"❌ Failed to delete audio clip {clip_path}: {str(e)}")
+        else:
+            logger.warning(f"⚠️ Audio clip file not found: {clip_path}")
         
         # Delete the detection from the database (RLS will ensure user can only delete their own)
         logger.info(f"🗑️ Attempting database deletion for detection_id: {detection_id}")
@@ -406,13 +396,9 @@ async def get_audio_clip(
         
         clip_path = result.data[0]["clip_path"]
         
-        # Decrypt the file path
-        from ..auth.encryption import encryption_service
-        decrypted_path = encryption_service.decrypt(clip_path)
-        
-        # Return the audio file
+        # Return the audio file (plaintext path, no decryption needed)
         from fastapi.responses import FileResponse
-        return FileResponse(decrypted_path, media_type="audio/wav")
+        return FileResponse(clip_path, media_type="audio/wav")
         
     except HTTPException as e:
         raise e

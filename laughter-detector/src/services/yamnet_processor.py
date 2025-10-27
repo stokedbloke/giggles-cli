@@ -98,24 +98,15 @@ class YAMNetProcessor:
         try:
             logger.info(f"🎭 Starting YAMNet processing for user {user_id}")
             
-            # Try to decrypt file path, if it fails, use the path as-is
-            try:
-                decrypted_path = encryption_service.decrypt(
-                    audio_file_path,
-                    associated_data=user_id.encode('utf-8')
-                )
-            except Exception:
-                # If decryption fails, assume the path is already unencrypted
-                decrypted_path = audio_file_path
-            
-            if not os.path.exists(decrypted_path):
-                logger.error(f"Audio file not found: {decrypted_path}")
+            # Use plaintext file path (no decryption needed)
+            if not os.path.exists(audio_file_path):
+                logger.error(f"Audio file not found: {audio_file_path}")
                 return []
             
-            logger.info(f"📁 Loading audio file: {os.path.basename(decrypted_path)}")
+            logger.info(f"📁 Loading audio file: {os.path.basename(audio_file_path)}")
             
             # Load and preprocess audio
-            audio_data, sample_rate = await self._load_audio(decrypted_path)
+            audio_data, sample_rate = await self._load_audio(audio_file_path)
             logger.info(f"🎵 Audio loaded: {len(audio_data)} samples at {sample_rate}Hz")
             
             # Run YAMNet inference
@@ -127,10 +118,10 @@ class YAMNetProcessor:
                 predictions, 
                 audio_data, 
                 sample_rate,
-                decrypted_path
+                audio_file_path
             )
             
-            logger.info(f"Found {len(laughter_events)} laughter events in {decrypted_path}")
+            logger.info(f"Found {len(laughter_events)} laughter events in {audio_file_path}")
             return laughter_events
             
         except Exception as e:
@@ -343,10 +334,8 @@ class YAMNetProcessor:
             # Save clip
             sf.write(clip_path, clip_data, sample_rate)
             
-            # Encrypt clip path for storage
-            encrypted_path = encryption_service.encrypt(clip_path)
-            
-            return encrypted_path
+            # Return plaintext clip path (no encryption needed)
+            return clip_path
             
         except Exception as e:
             logger.error(f"Error creating audio clip: {str(e)}")

@@ -14,7 +14,6 @@ import pytz
 from ..config.settings import settings
 from ..services.limitless_api import limitless_api_service
 from ..services.yamnet_processor import yamnet_processor
-from ..services.cleanup import cleanup_service
 from ..auth.encryption import encryption_service
 
 logger = logging.getLogger(__name__)
@@ -38,10 +37,9 @@ class Scheduler:
         self.running = True
         logger.info("Starting background scheduler")
         
-        # Start background tasks
+        # Start background tasks (removed cleanup loop - not needed)
         tasks = [
             asyncio.create_task(self._daily_processing_loop()),
-            asyncio.create_task(self._cleanup_loop()),
         ]
         
         try:
@@ -74,23 +72,6 @@ class Scheduler:
                 
             except Exception as e:
                 logger.error(f"Daily processing loop error: {str(e)}")
-                await asyncio.sleep(3600)  # Wait 1 hour before retrying
-    
-    async def _cleanup_loop(self):
-        """Cleanup loop for orphaned files and maintenance."""
-        while self.running:
-            try:
-                # Wait for cleanup interval
-                await asyncio.sleep(self.cleanup_interval)
-                
-                if not self.running:
-                    break
-                
-                # Run cleanup tasks
-                await self._run_cleanup_tasks()
-                
-            except Exception as e:
-                logger.error(f"Cleanup loop error: {str(e)}")
                 await asyncio.sleep(3600)  # Wait 1 hour before retrying
     
     async def _wait_until_processing_time(self):
@@ -286,22 +267,6 @@ class Scheduler:
             
         except Exception as e:
             logger.error(f"Error processing audio segment: {str(e)}")
-    
-    async def _run_cleanup_tasks(self):
-        """Run cleanup tasks."""
-        logger.info("Running cleanup tasks")
-        
-        try:
-            # Clean up orphaned files
-            orphaned_count = await cleanup_service.cleanup_orphaned_files()
-            
-            # Clean up old temporary files
-            temp_count = await cleanup_service.cleanup_old_temp_files()
-            
-            logger.info(f"Cleanup completed: {orphaned_count} orphaned files, {temp_count} temp files")
-            
-        except Exception as e:
-            logger.error(f"Cleanup tasks failed: {str(e)}")
     
     async def _get_active_users(self) -> list:
         """Get all users with active Limitless API keys."""
@@ -581,52 +546,19 @@ class Scheduler:
             return False
 
     async def _delete_audio_file(self, file_path: str, user_id: str):
-        """Securely delete audio file after processing."""
+        """Delete audio file after processing (plaintext path, no encryption)."""
         try:
             import os
-            from ..auth.encryption import encryption_service
             
-            # Try to decrypt the file path first
-            decrypted_path = None
-            try:
-                decrypted_path = encryption_service.decrypt(
-                    file_path,
-                    associated_data=user_id.encode('utf-8')
-                )
-                logger.info(f"Successfully decrypted file path: {decrypted_path}")
-            except Exception as e:
-                logger.warning(f"Failed to decrypt file path: {str(e)}")
-                # If decryption fails, we'll need to find the file by other means
-                decrypted_path = None
-            
-            # Try to delete the file if we have a decrypted path
-            if decrypted_path and os.path.exists(decrypted_path):
-                os.remove(decrypted_path)
-                logger.info(f"Deleted audio file: {decrypted_path}")
-                return
-            
-            # If we can't decrypt or the decrypted path doesn't exist,
-            # try to find and delete files in the user's audio directory
-            user_dir = os.path.join("uploads", "audio", user_id)
-            if os.path.exists(user_dir):
-                # Get all .ogg files in the user directory
-                audio_files = [f for f in os.listdir(user_dir) if f.endswith('.ogg')]
-                
-                if audio_files:
-                    # Delete the oldest file (assuming it's the one we just processed)
-                    # This is a fallback - ideally we'd have the correct path
-                    oldest_file = min(audio_files, key=lambda f: os.path.getctime(os.path.join(user_dir, f)))
-                    file_to_delete = os.path.join(user_dir, oldest_file)
-                    
-                    os.remove(file_to_delete)
-                    logger.info(f"Deleted audio file (fallback): {file_to_delete}")
-                else:
-                    logger.warning(f"No audio files found in user directory: {user_dir}")
+            # Use plaintext file path directly (no decryption needed)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"✅ Deleted audio file: {file_path}")
             else:
-                logger.warning(f"User audio directory does not exist: {user_dir}")
+                logger.warning(f"⚠️ Audio file not found: {file_path}")
                 
         except Exception as e:
-            logger.error(f"Error deleting audio file: {str(e)}")
+            logger.error(f"❌ Error deleting audio file: {str(e)}")
 
     async def _mark_segment_processed(self, segment_id: str):
         """Mark audio segment as processed."""

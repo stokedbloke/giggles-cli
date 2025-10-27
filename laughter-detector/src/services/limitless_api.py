@@ -84,17 +84,12 @@ class LimitlessAPIService:
             # Process audio segments for laughter detection
             processed_segments = []
             for segment_data in segments:
-                # Encrypt file path for security
-                encrypted_path = encryption_service.encrypt(
-                    segment_data['file_path'],
-                    associated_data=user_id.encode('utf-8')
-                )
-                
+                # Store plaintext file path (no encryption needed)
                 segment = AudioSegmentCreate(
                     date=segment_data['date'],
                     start_time=segment_data['start_time'],
                     end_time=segment_data['end_time'],
-                    file_path=encrypted_path  # Store encrypted file path
+                    file_path=segment_data['file_path']  # Store plaintext file path
                 )
                 processed_segments.append(segment)
             
