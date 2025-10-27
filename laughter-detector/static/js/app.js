@@ -112,6 +112,7 @@ class LaughterDetectorApp {
         } else {
             this.showAuthSection();
         }
+    }
     
     /**
      * Update user's timezone if it's set to UTC (migration for existing users).
