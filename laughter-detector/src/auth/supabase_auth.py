@@ -68,13 +68,14 @@ class AuthService:
         
         return has_upper and has_lower and has_digit and has_special
     
-    async def register_user(self, email: str, password: str) -> Dict[str, Any]:
+    async def register_user(self, email: str, password: str, timezone: str = "UTC") -> Dict[str, Any]:
         """
         Register a new user with Supabase Auth.
         
         Args:
             email: User email address
             password: User password
+            timezone: User's timezone (IANA format, e.g., 'America/Los_Angeles')
             
         Returns:
             User data and session information
@@ -111,8 +112,8 @@ class AuthService:
             # Enable MFA by default
             await self.enable_mfa(response.user.id)
             
-            # Create user in our custom users table
-            await self.create_user_profile(response.user.id, response.user.email)
+            # Create user in our custom users table with timezone
+            await self.create_user_profile(response.user.id, response.user.email, timezone)
             
             return {
                 "user_id": response.user.id,
@@ -165,22 +166,23 @@ class AuthService:
                 detail="Invalid credentials"
             )
     
-    async def create_user_profile(self, user_id: str, email: str) -> None:
+    async def create_user_profile(self, user_id: str, email: str, timezone: str = "UTC") -> None:
         """
         Create user profile in our custom users table.
         
         Args:
             user_id: User ID from Supabase auth
             email: User email address
+            timezone: User's timezone (IANA format, e.g., 'America/Los_Angeles')
         """
         try:
-            # Insert user into our custom users table
+            # Insert user into our custom users table with timezone
             result = self.supabase.table("users").insert({
                 "id": user_id,
                 "email": email,
                 "is_active": True,
                 "mfa_enabled": True,
-                "timezone": "UTC"
+                "timezone": timezone  # Store detected timezone
             }).execute()
             
             if not result.data:
@@ -328,6 +330,7 @@ class AuthService:
             return {
                 "user_id": user_data['id'],
                 "email": user_data['email'],
+                "timezone": user_data.get('timezone', 'UTC'),  # Include timezone
                 "created_at": user_data.get('created_at', datetime.utcnow().isoformat())
             }
             

@@ -11,8 +11,22 @@ class LaughterDetectorApp {
         this.authToken = localStorage.getItem('auth_token');
         this.currentUser = null;
         this.currentDate = null;
+        this.userTimezone = null; // User's timezone (IANA format)
         
         this.init();
+    }
+    
+    /**
+     * Detect user's timezone using browser API.
+     * @returns {string} IANA timezone string (e.g., "America/Los_Angeles")
+     */
+    detectTimezone() {
+        try {
+            return Intl.DateTimeFormat().resolvedOptions().timeZone;
+        } catch (error) {
+            console.warn('Failed to detect timezone, defaulting to UTC:', error);
+            return 'UTC';
+        }
     }
     
     init() {
@@ -83,6 +97,13 @@ class LaughterDetectorApp {
             try {
                 const response = await this.makeRequest('/auth/me', 'GET');
                 this.currentUser = response.user;
+                this.userTimezone = response.user?.timezone || 'UTC';
+                
+                // If user has UTC timezone, update it with detected timezone
+                if (this.userTimezone === 'UTC' && this.currentUser) {
+                    await this.updateTimezoneOnLogin();
+                }
+                
                 await this.checkUserStatus();
             } catch (error) {
                 this.clearAuth();
@@ -90,6 +111,25 @@ class LaughterDetectorApp {
             }
         } else {
             this.showAuthSection();
+        }
+    
+    /**
+     * Update user's timezone if it's set to UTC (migration for existing users).
+     */
+    async updateTimezoneOnLogin() {
+        const detectedTimezone = this.detectTimezone();
+        
+        try {
+            // Note: This endpoint will be created in Phase 2
+            // For now, just log for debugging
+            console.log(`Detected timezone: ${detectedTimezone}, current: ${this.userTimezone}`);
+            
+            // TODO: Implement API call to update timezone
+            // await this.makeRequest('/settings/timezone', 'PUT', { timezone: detectedTimezone });
+            // this.userTimezone = detectedTimezone;
+            // console.log(`Updated timezone to ${detectedTimezone}`);
+        } catch (error) {
+            console.warn('Failed to update timezone:', error);
         }
     }
     
@@ -141,11 +181,14 @@ class LaughterDetectorApp {
     async handleRegister() {
         const email = document.getElementById('register-email').value;
         const password = document.getElementById('register-password').value;
+        const timezone = this.detectTimezone(); // Detect user's timezone
         
         try {
             this.showLoading('Creating account...');
             const response = await this.makeRequest('/auth/register', 'POST', {
-                email, password
+                email, 
+                password,
+                timezone  // Send timezone to backend
             });
             
             this.hideLoading();

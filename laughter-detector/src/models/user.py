@@ -25,6 +25,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     """User creation model with password."""
     password: str
+    timezone: Optional[str] = "UTC"  # User's timezone (IANA format)
     
     @validator('password')
     def validate_password(cls, v):

@@ -34,7 +34,8 @@ async def register_user(user_data: UserCreate):
     try:
         result = await auth_service.register_user(
             user_data.email, 
-            user_data.password
+            user_data.password,
+            user_data.timezone  # Pass timezone from frontend
         )
         
         return UserResponse(
@@ -107,9 +108,12 @@ async def get_current_user_info(user: dict = Depends(get_current_user)):
     """
     try:
         return {
-            "user_id": user["user_id"],
-            "email": user["email"],
-            "is_authenticated": True
+            "user": {
+                "user_id": user["user_id"],
+                "email": user["email"],
+                "timezone": user.get("timezone", "UTC"),  # Include timezone
+                "is_authenticated": True
+            }
         }
         
     except Exception as e:
