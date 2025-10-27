@@ -96,8 +96,12 @@ class LaughterDetectorApp {
         if (this.authToken) {
             try {
                 const response = await this.makeRequest('/auth/me', 'GET');
+                console.log('✅ Auth response:', response);
+                
                 this.currentUser = response.user;
                 this.userTimezone = response.user?.timezone || 'UTC';
+                
+                console.log('✅ User timezone set to:', this.userTimezone);
                 
                 // If user has UTC timezone, update it with detected timezone
                 if (this.userTimezone === 'UTC' && this.currentUser) {
@@ -106,6 +110,7 @@ class LaughterDetectorApp {
                 
                 await this.checkUserStatus();
             } catch (error) {
+                console.error('❌ Auth check failed:', error);
                 this.clearAuth();
                 this.showAuthSection();
             }
