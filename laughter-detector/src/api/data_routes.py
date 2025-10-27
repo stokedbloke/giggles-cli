@@ -6,6 +6,7 @@ This module handles laughter detection data retrieval, updates, and deletion.
 
 from typing import List
 from datetime import datetime
+import re
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
@@ -26,6 +27,22 @@ logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter()
+
+def validate_uuid(uuid_string: str) -> bool:
+    """
+    Validate UUID format.
+    
+    Args:
+        uuid_string: UUID string to validate
+        
+    Returns:
+        bool: True if valid UUID format
+    """
+    uuid_pattern = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+        re.IGNORECASE
+    )
+    return bool(uuid_pattern.match(uuid_string))
 
 def create_user_supabase_client(credentials: HTTPAuthorizationCredentials) -> Client:
     """Create RLS-compliant Supabase client for user operations."""
@@ -149,8 +166,17 @@ async def get_laughter_detections(
         List of laughter detection events
         
     Raises:
-        HTTPException: If retrieval fails
+        HTTPException: If retrieval fails or date format is invalid
     """
+    # Validate date format
+    try:
+        datetime.strptime(date, '%Y-%m-%d')
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date format. Use YYYY-MM-DD"
+        )
+    
     try:
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
@@ -207,8 +233,15 @@ async def update_laughter_detection(
         Updated detection information
         
     Raises:
-        HTTPException: If update fails
+        HTTPException: If update fails or detection_id is invalid
     """
+    # Validate detection_id format
+    if not validate_uuid(detection_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid detection ID format"
+        )
+    
     try:
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
@@ -254,8 +287,15 @@ async def delete_laughter_detection(
         Success message
         
     Raises:
-        HTTPException: If deletion fails
+        HTTPException: If deletion fails or detection_id is invalid
     """
+    # Validate detection_id format
+    if not validate_uuid(detection_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid detection ID format"
+        )
+    
     try:
         logger.info(f"🗑️ DELETE request for detection_id: {detection_id}, user_id: {user['user_id']}")
         
@@ -342,8 +382,15 @@ async def get_audio_clip(
         Audio clip file
         
     Raises:
-        HTTPException: If retrieval fails
+        HTTPException: If retrieval fails or clip_id is invalid
     """
+    # Validate clip_id format
+    if not validate_uuid(clip_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid clip ID format"
+        )
+    
     try:
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
