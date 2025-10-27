@@ -97,6 +97,20 @@ System should:
 - `static/js/app.js` - detect timezone
 - `src/auth/supabase_auth.py` - accept and store timezone
 
+### Phase 3: Convert Display (UI Fix)
+1. All timestamps displayed in user's local time
+2. Days grouped by local timezone boundaries
+3. Fix the "7pm → 12pm" ordering issue
+
+**Files to modify:**
+- `static/js/app.js` - format timestamps for display
+- `src/api/data_routes.py` - include timezone in responses
+
+**Why Phase 3 before Phase 4?**
+- Fixes display issues immediately
+- User sees correct timestamps right away
+- Less risky than changing processing logic first
+
 ### Phase 4: Use for Daily Boundaries (Critical Fix)
 1. When user clicks "Update Today's Count"
 2. Get user's timezone from database
@@ -109,17 +123,26 @@ System should:
 - `src/services/scheduler.py` - use timezone for date ranges
 - `src/api/audio_routes.py` - manual trigger respects timezone
 
-### Phase 3: Convert Display (UI Fix)
-1. All timestamps displayed in user's local time
-2. Days grouped by local timezone boundaries
-3. Fix the "7pm → 12pm" ordering issue
+### Phase 2: Update Mechanism (MVP? Depends on Scope)
+**Question for you:** Do we need this for MVP?
 
-**Files to modify:**
-- `static/js/app.js` - format timestamps for display
-- `src/api/data_routes.py` - include timezone in responses
+**Arguments FOR including:**
+- User might travel, timezone will be wrong
+- User might want to manually correct detection
+- Browser detection might fail
+- Real user problem that will come up
 
-### Phase 2: Update Mechanism (Nice to Have)
-Add timezone selector in settings (can wait)
+**Arguments AGAINST (for MVP):**
+- Can just re-detect on next login
+- Most users won't travel frequently
+- Adds UI complexity
+- Can add later when users request it
+
+**MVP Recommendation:** 
+- **Skip for MVP** if we need to ship fast
+- **Include it** if we have time (it's not hard to implement)
+
+**Estimated effort:** 2-3 hours
 
 ---
 
@@ -156,14 +179,58 @@ today_end_utc = today_end.astimezone(pytz.UTC)
 
 ---
 
-## 🚀 Next Step
+## 🚀 Implementation Paths
 
-Let's start with **Phase 1 + Phase 4** together:
+### Path A: MVP Fast Track (Phases 1 + 3 + 4)
+**Goal:** Fix your immediate issue ASAP
 
-1. Detect timezone on registration
-2. Store it
-3. Use it immediately for "Update Today's Count"
+1. **Phase 1**: Detect & store timezone (30 min)
+2. **Phase 3**: Fix timestamp display (1 hour) 
+3. **Phase 4**: Fix daily boundary processing (1.5 hours)
+4. **Phase 2**: Skip for now
 
-This fixes your immediate issue without waiting for the full 4-phase rollout.
+**Total:** ~3 hours  
+**User Impact:** No manual timezone setting, but works correctly
 
-Ready to implement?
+### Path B: Complete Solution (All 4 Phases)
+**Goal:** Full timezone handling with manual update
+
+1. **Phase 1**: Detect & store timezone (30 min)
+2. **Phase 3**: Fix timestamp display (1 hour)
+3. **Phase 4**: Fix daily boundary processing (1.5 hours)
+4. **Phase 2**: Add manual update endpoint + UI (2-3 hours)
+
+**Total:** ~5-6 hours  
+**User Impact:** Full control, handles travel edge cases
+
+### Path C: Incremental (Phase by Phase)
+**Goal:** Low risk, iterative approach
+
+1. **Phase 1 only**: Just store timezone
+2. Test that it persists
+3. **Phase 3**: Fix display
+4. Test display works
+5. **Phase 4**: Fix processing
+6. Test processing works
+7. **Phase 2**: Add manual update (if needed)
+
+**Total:** ~5-6 hours spread over multiple sessions  
+**User Impact:** Lower risk of breaking things
+
+---
+
+## 💡 Not Hardcoding PST!
+
+**Important:** The implementation does NOT hardcode PST.
+
+The system will:
+- Detect timezone dynamically via browser
+- Store IANA timezone string (e.g., "America/Los_Angeles", "Europe/London")
+- Work for ANY timezone automatically
+- Handle DST transitions automatically
+
+**For you specifically (PST):**
+- Browser will detect "America/Los_Angeles" 
+- System stores that string
+- Processing uses that timezone
+- No hardcoding involved
