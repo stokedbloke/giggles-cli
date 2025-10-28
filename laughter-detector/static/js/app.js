@@ -86,17 +86,17 @@ class LaughterDetectorApp {
             this.updateProbabilityFilter(e.target.value);
         });
         
-        // Mobile navigation elements (stubbed)
+        // Mobile navigation elements (stubbed - do nothing for now)
         document.getElementById('add-btn').addEventListener('click', () => {
-            this.showStubbedScreen('Add Feature');
+            // Stubbed - do nothing for now
         });
         
         document.getElementById('nav-program').addEventListener('click', () => {
-            this.showStubbedScreen('Program');
+            // Stubbed - do nothing for now
         });
         
         document.getElementById('nav-feed').addEventListener('click', () => {
-            this.showStubbedScreen('Feed');
+            // Stubbed - do nothing for now
         });
         
         // Logout button
@@ -665,11 +665,6 @@ class LaughterDetectorApp {
         this.clearAuth();
         this.showAuthSection();
         this.showToast('Logged out successfully', 'success');
-    }
-    
-    showStubbedScreen(featureName) {
-        // Simple placeholder for stubbed features
-        alert(`${featureName} feature coming soon!`);
     }
     
     clearAuth() {

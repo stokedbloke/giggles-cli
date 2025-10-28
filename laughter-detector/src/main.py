@@ -120,7 +120,7 @@ app.add_middleware(
 # Add trusted host middleware
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["*"] if settings.debug else ["localhost", "127.0.0.1", "yourdomain.com", "*.yourdomain.com"]
+    allowed_hosts=["*"] if settings.debug else ["localhost", "127.0.0.1", "10.0.0.6", "192.168.*", "yourdomain.com", "*.yourdomain.com"]
 )
 
 # Mount static files
