@@ -3,7 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎭 Giggles</title>
+    <title>Laughter Detector</title>
+    <!-- Inter Google Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -59,11 +63,17 @@
         </div>
 
         <!-- Main App Section -->
-        <div id="app-section" class="section hidden">
-            <!-- App Header with Logout -->
-            <div class="app-header">
-                <button id="logout-btn" class="btn btn-secondary">Logout</button>
-            </div>
+        <div id="app-section" class="mobile-app hidden">
+            <!-- Mobile Header -->
+            <header class="mobile-header">
+                <div class="header-left">
+                    <button id="logout-btn" class="icon-btn">😊</button>
+                </div>
+                <h1 class="app-title">Laughter Detector</h1>
+                <div class="header-right">
+                    <button id="add-btn" class="icon-btn">+</button>
+                </div>
+            </header>
             
             <!-- Limitless Key Setup -->
             <div id="limitless-setup" class="setup-container">
@@ -80,9 +90,8 @@
             </div>
 
             <!-- Daily Summary -->
-            <div id="daily-summary" class="summary-container hidden">
-                <h2>Daily Laughter Summary</h2>
-                <div id="summary-cards" class="cards-container">
+            <div id="daily-summary" class="mobile-summary hidden">
+                <div id="summary-cards" class="day-cards-container">
                     <!-- Daily cards will be populated here -->
                 </div>
                 
@@ -93,6 +102,22 @@
                     <button id="delete-limitless-key" class="btn btn-warning">Delete API Key</button>
                 </div>
             </div>
+
+            <!-- Bottom Navigation -->
+            <nav class="bottom-nav">
+                <div class="nav-item" id="nav-program">
+                    <div class="nav-icon">📋</div>
+                    <span class="nav-label">Program</span>
+                </div>
+                <div class="nav-item active" id="nav-home">
+                    <div class="nav-icon">🏠</div>
+                    <span class="nav-label">Home</span>
+                </div>
+                <div class="nav-item" id="nav-feed">
+                    <div class="nav-icon">📰</div>
+                    <span class="nav-label">Feed</span>
+                </div>
+            </nav>
         </div>
 
         <!-- Day Detail View -->

@@ -86,6 +86,19 @@ class LaughterDetectorApp {
             this.updateProbabilityFilter(e.target.value);
         });
         
+        // Mobile navigation elements (stubbed)
+        document.getElementById('add-btn').addEventListener('click', () => {
+            this.showStubbedScreen('Add Feature');
+        });
+        
+        document.getElementById('nav-program').addEventListener('click', () => {
+            this.showStubbedScreen('Program');
+        });
+        
+        document.getElementById('nav-feed').addEventListener('click', () => {
+            this.showStubbedScreen('Feed');
+        });
+        
         // Logout button
         document.getElementById('logout-btn').addEventListener('click', () => {
             this.handleLogout();
@@ -328,16 +341,19 @@ class LaughterDetectorApp {
             return;
         }
         
-        daysWithLaughter.forEach(day => {
-            const card = this.createDayCard(day);
+        daysWithLaughter.forEach((day, index) => {
+            const card = this.createDayCard(day, index);
             container.appendChild(card);
         });
     }
     
-    createDayCard(day) {
+    createDayCard(day, index = 0) {
         const card = document.createElement('div');
-        card.className = 'day-card';
-        card.onclick = () => this.showDayDetail(day.date);
+        card.className = 'day-card clickable';
+        
+        // Color cycling: cycle through 6 colors
+        const colorIndex = index % 6;
+        card.classList.add(`color-${colorIndex}`);
         
         // Parse date string correctly to avoid timezone issues
         const date = new Date(day.date + 'T12:00:00'); // Add noon to avoid timezone issues
@@ -345,10 +361,26 @@ class LaughterDetectorApp {
         const monthDay = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         
         card.innerHTML = `
-            <h3>${day.total_laughter_events}</h3>
-            <p>${dayName}</p>
-            <p class="date">${monthDay}</p>
+            <div class="card-content">
+                <div class="card-info">
+                    <div class="card-day card-text">${dayName}</div>
+                    <div class="card-date card-text">${monthDay}</div>
+                    <div class="card-count card-text">${day.total_laughter_events}</div>
+                    <div class="card-label card-text">giggles</div>
+                </div>
+                <div class="card-play card-text">▶</div>
+            </div>
         `;
+        
+        // Add click handler to the count number specifically
+        const countElement = card.querySelector('.card-count');
+        countElement.onclick = (e) => {
+            e.stopPropagation();
+            this.showDayDetail(day.date);
+        };
+        
+        // Also allow clicking anywhere on the card
+        card.onclick = () => this.showDayDetail(day.date);
         
         return card;
     }
@@ -633,6 +665,11 @@ class LaughterDetectorApp {
         this.clearAuth();
         this.showAuthSection();
         this.showToast('Logged out successfully', 'success');
+    }
+    
+    showStubbedScreen(featureName) {
+        // Simple placeholder for stubbed features
+        alert(`${featureName} feature coming soon!`);
     }
     
     clearAuth() {
