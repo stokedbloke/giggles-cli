@@ -70,7 +70,9 @@ class AuthService:
     
     async def register_user(self, email: str, password: str, timezone: str = "UTC") -> Dict[str, Any]:
         """
-        Register a new user with Supabase Auth.
+        Register a new user with timezone detection.
+        
+        TIMEZONE FIX: Now accepts timezone parameter from frontend detection.
         
         Args:
             email: User email address
@@ -112,7 +114,7 @@ class AuthService:
             # Enable MFA by default
             await self.enable_mfa(response.user.id)
             
-            # Create user in our custom users table with timezone
+            # TIMEZONE FIX: Create user profile with detected timezone
             await self.create_user_profile(response.user.id, response.user.email, timezone)
             
             return {
@@ -330,7 +332,7 @@ class AuthService:
             return {
                 "user_id": user_data['id'],
                 "email": user_data['email'],
-                "timezone": user_data.get('timezone', 'UTC'),  # Include timezone
+                "timezone": user_data.get('timezone', 'UTC'),  # TIMEZONE FIX: Include timezone in response
                 "created_at": user_data.get('created_at', datetime.utcnow().isoformat())
             }
             

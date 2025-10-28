@@ -187,14 +187,14 @@ class LaughterDetectorApp {
     async handleRegister() {
         const email = document.getElementById('register-email').value;
         const password = document.getElementById('register-password').value;
-        const timezone = this.detectTimezone(); // Detect user's timezone
+        const timezone = this.detectTimezone(); // TIMEZONE FIX: Detect user's timezone
         
         try {
             this.showLoading('Creating account...');
             const response = await this.makeRequest('/auth/register', 'POST', {
                 email, 
                 password,
-                timezone  // Send timezone to backend
+                timezone  // TIMEZONE FIX: Send timezone to backend
             });
             
             this.hideLoading();
@@ -603,7 +603,8 @@ class LaughterDetectorApp {
         document.getElementById('app-section').classList.add('hidden');
         document.getElementById('day-detail').classList.remove('hidden');
         
-        const date = new Date(this.currentDate);
+        // Parse the date correctly to avoid timezone issues
+        const date = new Date(this.currentDate + 'T12:00:00');
         document.getElementById('detail-date').textContent = 
             date.toLocaleDateString('en-US', { 
                 weekday: 'long', 

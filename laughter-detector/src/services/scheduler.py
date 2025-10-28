@@ -7,6 +7,7 @@ cleanup operations, and maintenance tasks.
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 import pytz
@@ -171,7 +172,9 @@ class Scheduler:
             for segment in segments:
                 # Check if this specific segment already exists and is processed
                 if await self._segment_already_processed(user_id, segment):
-                    logger.info(f"Segment {segment.id} already processed for user {user_id}")
+                    # Get file_path for logging (handle both dict and object formats)
+                    file_path = segment['file_path'] if isinstance(segment, dict) else segment.file_path
+                    logger.info(f"Segment with file {os.path.basename(file_path)} already processed for user {user_id}")
                     continue
                 
                 # Store the segment in the database first

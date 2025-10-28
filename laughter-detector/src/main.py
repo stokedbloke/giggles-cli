@@ -17,7 +17,6 @@ from fastapi.responses import HTMLResponse
 
 from .config.settings import settings
 from .api.routes import router
-from .services.cleanup import cleanup_service
 from .services.scheduler import scheduler
 
 # Configure logging
@@ -58,9 +57,6 @@ async def lifespan(app: FastAPI):
     # Stop the scheduler
     await scheduler.stop()
     
-    # Perform final cleanup
-    await cleanup_service.schedule_cleanup()
-    
     logger.info("Application shutdown complete")
 
 
@@ -99,11 +95,13 @@ async def add_security_headers(request: Request, call_next):
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
-        "font-src 'self'"
+        "font-src 'self'; "
+        "media-src 'self' blob: data:"
     )
     
     # Remove server header (if possible)
-    response.headers.pop("Server", None)
+    if "Server" in response.headers:
+        del response.headers["Server"]
     
     return response
 

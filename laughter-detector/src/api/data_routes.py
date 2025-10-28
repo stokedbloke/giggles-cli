@@ -5,8 +5,9 @@ This module handles laughter detection data retrieval, updates, and deletion.
 """
 
 from typing import List
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
+import pytz
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
@@ -80,47 +81,34 @@ async def get_daily_summary(
         HTTPException: If retrieval fails
     """
     try:
+        # Get user's timezone (default to UTC if not set)
+        user_timezone = user.get('timezone', 'UTC')
+        user_tz = pytz.timezone(user_timezone)
+        
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
         
-        # Get audio segments grouped by date (RLS will ensure user can only access their own)
-        segments_result = supabase.table("audio_segments").select(
-            "id, date, processed"
+        # Get all laughter detections with timestamps (RLS will ensure user can only access their own)
+        detections_result = supabase.table("laughter_detections").select(
+            "id, timestamp, probability"
         ).execute()
         
-        if not segments_result.data:
+        if not detections_result.data:
             return []
         
-        # Get laughter detections grouped by date (RLS will ensure user can only access their own)
-        detections_result = supabase.table("laughter_detections").select(
-            "*, audio_segments!inner(date, user_id)"
-        ).execute()
-        
-        # Group by date and calculate summaries
+        # Group detections by date in user's timezone
         summaries = {}
         
-        # Process audio segments
-        for segment in segments_result.data:
-            date = segment["date"]
-            if date not in summaries:
-                summaries[date] = {
-                    "date": date,
-                    "total_laughter_events": 0,
-                    "average_probability": 0.0,
-                    "audio_segments_processed": 0
-                }
-            
-            if segment["processed"]:
-                summaries[date]["audio_segments_processed"] += 1
-        
-        # Process laughter detections (filter out detections with wrong timestamps)
         for detection in detections_result.data:
-            # Skip detections with obviously wrong timestamps (like 1969 dates)
-            timestamp = detection["timestamp"]
-            if timestamp and "1969" in timestamp:
-                continue  # Skip detections with 1969 timestamps (broken data)
+            # Parse UTC timestamp
+            timestamp_utc = datetime.fromisoformat(detection["timestamp"].replace('Z', '+00:00'))
             
-            date = detection["audio_segments"]["date"]
+            # Convert to user's timezone
+            timestamp_local = timestamp_utc.astimezone(user_tz)
+            
+            # Get date in user's timezone
+            date = timestamp_local.strftime('%Y-%m-%d')
+            
             if date not in summaries:
                 summaries[date] = {
                     "date": date,
@@ -132,7 +120,7 @@ async def get_daily_summary(
             summaries[date]["total_laughter_events"] += 1
             summaries[date]["average_probability"] += detection["probability"]
         
-        # Calculate averages and return
+        # Calculate averages
         summary_list = []
         for date, summary in summaries.items():
             if summary["total_laughter_events"] > 0:
@@ -159,8 +147,8 @@ async def get_laughter_detections(
     Get laughter detections for a specific date.
     
     Args:
-        date: Date in YYYY-MM-DD format
-        user: Current authenticated user
+        date: Date in YYYY-MM-DD format (interpreted in user's timezone)
+        user: Current authenticated user (contains timezone field)
         
     Returns:
         List of laughter detection events
@@ -178,13 +166,27 @@ async def get_laughter_detections(
         )
     
     try:
+        # Get user's timezone (default to UTC if not set)
+        user_timezone = user.get('timezone', 'UTC')
+        
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
         
-        # Get laughter detections for the specified date (RLS will ensure user can only access their own)
+        # TIMEZONE FIX: Calculate day boundaries in user's timezone
+        # Parse the date as midnight in user's timezone
+        user_tz = pytz.timezone(user_timezone)
+        start_of_day_local = user_tz.localize(datetime.strptime(date, '%Y-%m-%d'))
+        end_of_day_local = start_of_day_local + timedelta(days=1)
+        
+        # Convert to UTC for database query (database stores all timestamps in UTC)
+        start_of_day_utc = start_of_day_local.astimezone(pytz.UTC)
+        end_of_day_utc = end_of_day_local.astimezone(pytz.UTC)
+        
+        # Get laughter detections for the specified date range in UTC
+        # RLS will ensure user can only access their own data
         result = supabase.table("laughter_detections").select(
             "*, audio_segments!inner(date, user_id)"
-        ).eq("audio_segments.date", date).execute()
+        ).gte("timestamp", start_of_day_utc.isoformat()).lt("timestamp", end_of_day_utc.isoformat()).execute()
         
         if not result.data:
             return []
@@ -396,7 +398,30 @@ async def get_audio_clip(
         
         clip_path = result.data[0]["clip_path"]
         
-        # Return the audio file (plaintext path, no decryption needed)
+        # Decrypt the path if it's encrypted (for old data)
+        # New data has plaintext paths, old data has encrypted paths
+        try:
+            from ..auth.encryption import encryption_service
+            # Try to decrypt - if it fails, it's already plaintext
+            clip_path = encryption_service.decrypt(clip_path)
+        except:
+            pass  # Already plaintext, keep as is
+        
+        # Convert relative path to absolute path
+        if not os.path.isabs(clip_path):
+            # Path is relative, make it absolute relative to the laughter-detector directory
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # Go up to laughter-detector/
+            clip_path = os.path.join(base_dir, clip_path.lstrip('./'))
+        
+        # Check if file exists
+        if not os.path.exists(clip_path):
+            logger.error(f"Audio file not found: {clip_path}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Audio file not found on disk"
+            )
+        
+        # Return the audio file
         from fastapi.responses import FileResponse
         return FileResponse(clip_path, media_type="audio/wav")
         
