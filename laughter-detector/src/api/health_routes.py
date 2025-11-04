@@ -5,9 +5,7 @@ This module handles health checks and system status endpoints.
 """
 
 from fastapi import APIRouter
-import logging
 
-logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter()

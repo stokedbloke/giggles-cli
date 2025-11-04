@@ -11,12 +11,10 @@ Usage:
 """
 
 import os
-import logging
 from typing import List, Dict
 from datetime import datetime
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
 
 
 class OrphanDetector:
@@ -37,8 +35,8 @@ class OrphanDetector:
         """
         orphans = []
         
-        if not self.audio_dir.exists():
-            logger.warning(f"Audio directory not found: {self.audio_dir}")
+        if not os.path.exists(self.audio_dir):
+            print(f"⚠️ Audio directory not found: {self.audio_dir}")
             return orphans
         
         # Get all .ogg files in audio directories
@@ -59,7 +57,7 @@ class OrphanDetector:
                     }
                     orphans.append(file_info)
                 except Exception as e:
-                    logger.error(f"Error checking file {audio_file}: {str(e)}")
+                    print(f"❌ Error checking file {audio_file}: {str(e)}")
         
         return orphans
     
@@ -70,7 +68,7 @@ class OrphanDetector:
         Returns:
             Dictionary with orphan statistics and file lists
         """
-        logger.info("🔍 Scanning for orphaned files...")
+        print("🔍 Scanning for orphaned files...")
         
         audio_orphans = self.detect_orphaned_audio_files()
         
@@ -83,7 +81,7 @@ class OrphanDetector:
             "audio_orphans": audio_orphans
         }
         
-        logger.info(f"✅ Found {len(audio_orphans)} orphaned audio files ({total_size_mb:.2f} MB)")
+        print(f"✅ Found {len(audio_orphans)} orphaned audio files ({total_size_mb:.2f} MB)")
         
         return report
     

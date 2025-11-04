@@ -5,13 +5,11 @@ This module handles user registration, login, and authentication-related endpoin
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends
-import logging
 
 from ..auth.supabase_auth import auth_service
 from ..models.user import UserCreate, UserLogin, UserResponse
 from .dependencies import get_current_user
 
-logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter()
@@ -46,12 +44,36 @@ async def register_user(user_data: UserCreate):
             mfa_enabled=True
         )
         
+    except HTTPException as e:
+        # Re-raise HTTPExceptions as-is
+        raise e
     except Exception as e:
-        logger.error(f"Registration failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Registration failed. Please check your email and password."
-        )
+        # Handle specific error types
+        error_msg = str(e).lower()
+        if "already registered" in error_msg or "user already exists" in error_msg:
+            # User already exists - suggest login instead
+            print(f"Registration attempted for existing user: {user_data.email}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered. Please log in instead."
+            )
+        elif "email" in error_msg and "invalid" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid email format"
+            )
+        elif "password" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password does not meet requirements (8+ chars with uppercase, lowercase, digit, special char)"
+            )
+        else:
+            # Generic error
+            print(f"❌ Registration failed: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Registration failed: {str(e)}"
+            )
 
 
 @router.post("/auth/login")
@@ -85,7 +107,7 @@ async def login_user(credentials: UserLogin):
         }
         
     except Exception as e:
-        logger.error(f"Login failed: {str(e)}")
+        print(f"❌ Login failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials"
@@ -117,7 +139,7 @@ async def get_current_user_info(user: dict = Depends(get_current_user)):
         }
         
     except Exception as e:
-        logger.error(f"Failed to get user info: {str(e)}")
+        print(f"❌ Failed to get user info: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated"

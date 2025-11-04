@@ -7,7 +7,6 @@ This module handles audio processing, laughter detection, and related endpoints.
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import logging
 
 from ..auth.supabase_auth import auth_service
 from ..auth.encryption import encryption_service
@@ -18,7 +17,6 @@ from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter()
@@ -96,7 +94,7 @@ async def process_daily_audio(
                 "status": "timeout"
             }
         except Exception as e:
-            logger.warning(f"Limitless API error: {str(e)}")
+            print(f"⚠️ Limitless API error: {str(e)}")
             return {
                 "message": "Audio processing completed with limited data",
                 "segments_processed": 0,
@@ -113,7 +111,7 @@ async def process_daily_audio(
                 )
                 laughter_count += len(laughter_events)
             except Exception as e:
-                logger.warning(f"Error processing segment: {str(e)}")
+                print(f"⚠️ Error processing segment: {str(e)}")
                 continue
         
         return {
@@ -126,65 +124,10 @@ async def process_daily_audio(
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error(f"Error processing daily audio: {str(e)}")
+        print(f"❌ Error processing daily audio: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process daily audio"
-        )
-
-
-@router.post("/test-audio-processing")
-async def test_audio_processing(
-    user: dict = Depends(get_current_user)
-):
-    """
-    Test endpoint to manually process audio with YAMNet.
-    This allows testing the laughter detection without waiting for daily processing.
-    """
-    try:
-        # Create RLS-compliant client
-        supabase = create_user_supabase_client(credentials)
-        
-        # Get user's encrypted API key (RLS will ensure user can only access their own)
-        result = supabase.table("limitless_keys").select("*").eq("is_active", True).execute()
-        
-        if not result.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No Limitless API key found for user"
-            )
-        
-        # Decrypt the API key
-        encrypted_key = result.data[0]["encrypted_api_key"]
-        api_key = encryption_service.decrypt(encrypted_key, user["user_id"].encode('utf-8'))
-        
-        # Test the Limitless API connection
-        limitless_api_service = LimitlessAPIService()
-        
-        # Get recent audio segments (last 24 hours)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=1)
-        
-        # This would call the actual Limitless API
-        # For now, return a test response
-        return {
-            "message": "Audio processing test initiated",
-            "status": "testing",
-            "user_id": user["user_id"],
-            "date_range": {
-                "start": start_date.isoformat(),
-                "end": end_date.isoformat()
-            },
-            "note": "This is a test endpoint - actual audio processing will be implemented next"
-        }
-        
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Error in test audio processing: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to test audio processing"
         )
 
 
@@ -194,39 +137,68 @@ async def trigger_nightly_processing(
     credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
 ):
     """
-    Manually trigger nightly processing for testing.
+    Manually trigger nightly processing for testing with enhanced logging.
     This runs the same logic as the automated scheduler.
+    
+    Called when user clicks "Update Today's Count" button.
+    
+    Flow:
+    1. Get user info (from JWT token) including timezone
+    2. Initialize enhanced logging
+    3. Call scheduler._process_user_audio which:
+       - Calculates date range (start of today to now in user's timezone)
+       - Splits into 2-hour chunks
+       - For each chunk: calls Limitless API to download audio
+       - Processes audio with YAMNet to detect laughter
+       - Stores laughter events in database
+       - Deletes OGG files after processing
     """
     try:
         from ..services.scheduler import scheduler
+        from ..services.enhanced_logger import get_enhanced_logger
         import asyncio
         
+        print(f"🎯 Starting nightly processing for user {user['user_id'][:8]}...")
+        
+        # Initialize enhanced logger for manual trigger
+        # This creates detailed step-by-step logs stored in processing_logs table
+        enhanced_logger = get_enhanced_logger(user["user_id"], "manual")
+        
+        # Set trigger type on scheduler for logging purposes
+        scheduler._trigger_type = "manual"
+        
         # Trigger processing for the current user with timeout
+        # user["timezone"] comes from get_current_user -> users table -> timezone field
+        # This determines which timezone to use for calculating "today"
         try:
             await asyncio.wait_for(
                 scheduler._process_user_audio({
                     "user_id": user["user_id"],
                     "email": user.get("email", ""),
-                    "timezone": user.get("timezone", "UTC")
+                    "timezone": user.get("timezone", "UTC")  # User's IANA timezone from DB
                 }),
                 timeout=300.0  # 5 minute timeout for YAMNet processing
             )
             
+            print(f"✅ Nightly processing completed for user {user['user_id'][:8]}")
+            
             return {
                 "message": "Nightly processing triggered successfully",
                 "status": "completed",
-                "user_id": user["user_id"]
+                "user_id": user["user_id"],
+                "trigger_type": "manual"
             }
             
         except asyncio.TimeoutError:
             return {
                 "message": "Processing timed out - Limitless API may be slow",
                 "status": "timeout",
-                "user_id": user["user_id"]
+                "user_id": user["user_id"],
+                "trigger_type": "manual"
             }
         
     except Exception as e:
-        logger.error(f"Error triggering nightly processing: {str(e)}")
+        print(f"❌ Error triggering nightly processing: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to trigger nightly processing"

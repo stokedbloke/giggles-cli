@@ -10,13 +10,13 @@ import re
 import pytz
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import logging
 
 from ..auth.supabase_auth import auth_service
 from ..models.audio import (
     AudioSegmentResponse, 
     LaughterDetectionResponse, 
     DailyLaughterSummary,
+    ReprocessDateRangeRequest,
     LaughterDetectionUpdate
 )
 from .dependencies import get_current_user
@@ -24,7 +24,6 @@ from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter()
@@ -97,16 +96,18 @@ async def get_daily_summary(
             return []
         
         # Group detections by date in user's timezone
+        # TIMEZONE FIX: Same approach as get_laughter_detections() - convert UTC timestamps to user's timezone
+        # to group by local date (ensures "Friday" shows Friday's data regardless of timezone)
         summaries = {}
         
         for detection in detections_result.data:
-            # Parse UTC timestamp
+            # Parse UTC timestamp (database stores all timestamps in UTC)
             timestamp_utc = datetime.fromisoformat(detection["timestamp"].replace('Z', '+00:00'))
             
-            # Convert to user's timezone
+            # Convert to user's timezone for date grouping
             timestamp_local = timestamp_utc.astimezone(user_tz)
             
-            # Get date in user's timezone
+            # Get date in user's timezone (used as key for grouping)
             date = timestamp_local.strftime('%Y-%m-%d')
             
             if date not in summaries:
@@ -130,7 +131,7 @@ async def get_daily_summary(
         return sorted(summary_list, key=lambda x: x.date, reverse=True)
         
     except Exception as e:
-        logger.error(f"Error getting daily summary: {str(e)}")
+        print(f"❌ Error getting daily summary: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get daily summary"
@@ -173,6 +174,14 @@ async def get_laughter_detections(
         supabase = create_user_supabase_client(credentials)
         
         # TIMEZONE FIX: Calculate day boundaries in user's timezone
+        # PROBLEM SOLVED: Previously, date boundaries were calculated in UTC, causing dates to shift
+        # by timezone offset (e.g., clicking "Friday" showed Thursday's data for PST users).
+        #
+        # SOLUTION: Parse the date string as midnight in user's timezone, then convert to UTC for database query.
+        # This ensures the UI shows the correct day's data regardless of user's timezone.
+        #
+        # DATABASE: All timestamps in laughter_detections table are stored in UTC (see scheduler._store_laughter_detections)
+        # The conversion here ensures we query the correct UTC range for the user's local date.
         # Parse the date as midnight in user's timezone
         user_tz = pytz.timezone(user_timezone)
         start_of_day_local = user_tz.localize(datetime.strptime(date, '%Y-%m-%d'))
@@ -183,10 +192,12 @@ async def get_laughter_detections(
         end_of_day_utc = end_of_day_local.astimezone(pytz.UTC)
         
         # Get laughter detections for the specified date range in UTC
-        # RLS will ensure user can only access their own data
+        # DATABASE QUERY: Selects from laughter_detections table with timestamp filter
+        # RLS (Row Level Security) will ensure user can only access their own data
+        # ORDER BY: Chronological order for UI display (fixes issue where laughs weren't sorted)
         result = supabase.table("laughter_detections").select(
             "*, audio_segments!inner(date, user_id)"
-        ).gte("timestamp", start_of_day_utc.isoformat()).lt("timestamp", end_of_day_utc.isoformat()).execute()
+        ).gte("timestamp", start_of_day_utc.isoformat()).lt("timestamp", end_of_day_utc.isoformat()).order("timestamp").execute()
         
         if not result.data:
             return []
@@ -209,7 +220,7 @@ async def get_laughter_detections(
         return detections
         
     except Exception as e:
-        logger.error(f"Error getting laughter detections: {str(e)}")
+        print(f"❌ Error getting laughter detections: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get laughter detections"
@@ -265,7 +276,7 @@ async def update_laughter_detection(
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error(f"Error updating detection: {str(e)}")
+        print(f"❌ Error updating detection: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update detection"
@@ -299,58 +310,58 @@ async def delete_laughter_detection(
         )
     
     try:
-        logger.info(f"🗑️ DELETE request for detection_id: {detection_id}, user_id: {user['user_id']}")
+        print(f"🗑️ DELETE request for detection_id: {detection_id}, user_id: {user['user_id']}")
         
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
         
         # First, get the clip path before deleting (RLS will ensure user can only access their own)
-        logger.info(f"📋 Fetching detection record for ID: {detection_id}")
+        print(f"📋 Fetching detection record for ID: {detection_id}")
         detection_result = supabase.table("laughter_detections").select("clip_path").eq("id", detection_id).execute()
         
-        logger.info(f"📋 Detection fetch result: {detection_result.data}")
+        print(f"📋 Detection fetch result: {detection_result.data}")
         
         if not detection_result.data:
-            logger.error(f"❌ Detection not found: {detection_id}")
+            print(f"❌ ❌ Detection not found: {detection_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Detection not found"
             )
         
         clip_path = detection_result.data[0]["clip_path"]
-        logger.info(f"📁 Clip path: {clip_path}")
+        print(f"📁 Clip path: {clip_path}")
         
         # Delete the audio clip file if it exists (plaintext path, no decryption needed)
         import os
         if os.path.exists(clip_path):
             try:
                 os.remove(clip_path)
-                logger.info(f"✅ Deleted audio clip: {clip_path}")
+                print(f"✅ Deleted audio clip: {clip_path}")
             except Exception as e:
-                logger.error(f"❌ Failed to delete audio clip {clip_path}: {str(e)}")
+                print(f"❌ ❌ Failed to delete audio clip {clip_path}: {str(e)}")
         else:
-            logger.warning(f"⚠️ Audio clip file not found: {clip_path}")
+            print(f"⚠️ ⚠️ Audio clip file not found: {clip_path}")
         
         # Delete the detection from the database (RLS will ensure user can only delete their own)
-        logger.info(f"🗑️ Attempting database deletion for detection_id: {detection_id}")
+        print(f"🗑️ Attempting database deletion for detection_id: {detection_id}")
         result = supabase.table("laughter_detections").delete().eq("id", detection_id).execute()
         
-        logger.info(f"🗑️ Database deletion result: {result.data}")
+        print(f"🗑️ Database deletion result: {result.data}")
         
         if not result.data:
-            logger.error(f"❌ No data returned from database delete for detection_id: {detection_id}")
+            print(f"❌ ❌ No data returned from database delete for detection_id: {detection_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Detection not found or already deleted"
             )
         
-        logger.info(f"✅ Successfully deleted detection {detection_id}")
+        print(f"✅ Successfully deleted detection {detection_id}")
         return {"message": "Detection deleted successfully"}
         
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error(f"Error deleting detection: {str(e)}")
+        print(f"❌ Error deleting detection: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete detection"
@@ -415,7 +426,7 @@ async def get_audio_clip(
         
         # Check if file exists
         if not os.path.exists(clip_path):
-            logger.error(f"Audio file not found: {clip_path}")
+            print(f"❌ Audio file not found: {clip_path}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Audio file not found on disk"
@@ -428,7 +439,7 @@ async def get_audio_clip(
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error(f"Error getting audio clip: {str(e)}")
+        print(f"❌ Error getting audio clip: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get audio clip"
@@ -478,12 +489,12 @@ async def delete_user_data(
         # Delete laughter detections (RLS will ensure user can only delete their own)
         # Need a WHERE clause - RLS policies will limit to the user's own data
         laughter_result = supabase.table("laughter_detections").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-        logger.info(f"Deleted {len(laughter_result.data)} laughter detections")
+        print(f"Deleted {len(laughter_result.data)} laughter detections")
         
         # Delete audio segments (RLS will ensure user can only delete their own)
         # Need a WHERE clause - RLS policies will limit to the user's own data
         segments_result = supabase.table("audio_segments").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-        logger.info(f"Deleted {len(segments_result.data)} audio segments")
+        print(f"Deleted {len(segments_result.data)} audio segments")
         
         # Also clean up orphaned files
         import os
@@ -495,20 +506,79 @@ async def delete_user_data(
         if audio_dir.exists():
             shutil.rmtree(audio_dir)
             audio_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Cleaned up all audio files")
+            print(f"Cleaned up all audio files")
         
         # Clean up all laughter clips (they're not user-specific)
         clips_dir = Path("uploads/clips")
         if clips_dir.exists():
             shutil.rmtree(clips_dir)
             clips_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Cleaned up all laughter clips")
+            print(f"Cleaned up all laughter clips")
         
         return {"message": "User data deleted successfully (API key preserved)"}
         
     except Exception as e:
-        logger.error(f"Error deleting user data: {str(e)}")
+        print(f"❌ Error deleting user data: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete user data"
+        )
+
+
+@router.post("/reprocess-date-range")
+async def reprocess_date_range_api(
+    request: ReprocessDateRangeRequest,
+    user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
+):
+    """
+    Reprocess audio data for a date range.
+    
+    This clears existing data for the date range and redownloads/reprocesses from Limitless API.
+    
+    Args:
+        request: Request body with start_date and end_date (YYYY-MM-DD format)
+        user: Current authenticated user
+        
+    Returns:
+        Success message with processing summary
+        
+    Raises:
+        HTTPException: If reprocessing fails or dates are invalid
+    """
+    try:
+        user_id = user["user_id"]
+        start_date = request.start_date
+        end_date = request.end_date
+        
+        print(f"🔄 Starting reprocess for {start_date} to {end_date}, user {user_id[:8]}")
+        
+        # Import the reprocess function from manual_reprocess_yesterday
+        import sys
+        import os
+        script_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        sys.path.insert(0, script_dir)
+        from manual_reprocess_yesterday import reprocess_date_range as reprocess_func
+        
+        # Call the reprocess function (it handles all the work)
+        await reprocess_func(start_date, end_date, user_id)
+        
+        print(f"✅ Reprocess complete for {start_date} to {end_date}")
+        
+        return {
+            "message": "Reprocessing completed successfully",
+            "start_date": start_date,
+            "end_date": end_date,
+            "status": "completed"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error reprocessing date range: {str(e)}")
+        import traceback
+        print(f"❌ {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reprocess date range: {str(e)}"
         )

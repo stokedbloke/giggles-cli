@@ -117,6 +117,21 @@ class AudioProcessingStatus(BaseModel):
     last_processed: Optional[datetime] = None
 
 
+class ReprocessDateRangeRequest(BaseModel):
+    """Model for reprocess date range request."""
+    start_date: str = Field(..., description="Start date in YYYY-MM-DD format")
+    end_date: str = Field(..., description="End date in YYYY-MM-DD format")
+    
+    @validator('start_date', 'end_date')
+    def validate_date_format(cls, v):
+        """Validate date format is YYYY-MM-DD."""
+        try:
+            datetime.strptime(v, '%Y-%m-%d')
+            return v
+        except ValueError:
+            raise ValueError('Date must be in YYYY-MM-DD format')
+
+
 # SQLAlchemy Models
 class AudioSegment(Base):
     """SQLAlchemy model for audio segments table."""

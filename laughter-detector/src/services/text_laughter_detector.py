@@ -5,12 +5,10 @@ This module analyzes text content from Limitless AI transcripts to detect laught
 """
 
 import re
-import logging
 from typing import List, Dict, Any
 from datetime import datetime
 import asyncio
 
-logger = logging.getLogger(__name__)
 
 
 class TextLaughterDetector:
@@ -30,7 +28,7 @@ class TextLaughterDetector:
         # Compile regex patterns for efficiency
         self.compiled_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.laughter_patterns]
         
-        logger.info(f"Text laughter detector initialized with {len(self.laughter_patterns)} patterns")
+        print(f"Text laughter detector initialized with {len(self.laughter_patterns)} patterns")
     
     async def detect_laughter_in_text(self, text_content: str, segment_id: str) -> List[Dict[str, Any]]:
         """
@@ -63,11 +61,11 @@ class TextLaughterDetector:
                     }
                     laughter_events.append(laughter_event)
             
-            logger.info(f"Detected {len(laughter_events)} laughter events in text segment {segment_id}")
+            print(f"Detected {len(laughter_events)} laughter events in text segment {segment_id}")
             return laughter_events
             
         except Exception as e:
-            logger.error(f"Error detecting laughter in text: {str(e)}")
+            print(f"❌ Error detecting laughter in text: {str(e)}")
             return []
     
     def _split_into_sentences(self, text: str) -> List[str]:
