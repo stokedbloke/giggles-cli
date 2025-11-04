@@ -6,7 +6,6 @@ cleanup operations, and maintenance tasks.
 """
 
 import asyncio
-import logging
 import os
 from datetime import datetime, timedelta
 from typing import Optional
@@ -17,7 +16,16 @@ from ..services.limitless_api import limitless_api_service
 from ..services.yamnet_processor import yamnet_processor
 from ..auth.encryption import encryption_service
 
-logger = logging.getLogger(__name__)
+
+def _norm_iso(ts: str) -> str:
+    """Normalize ISO timestamp microseconds to 6 digits."""
+    if '.' in ts:
+        main, rest = ts.split('.', 1)
+        us_part, tz_part = (rest.split('+', 1) + [''])[:2] if '+' in rest else (rest, '')
+        us_part = us_part.rstrip('Z')
+        us_part = (us_part + '000000')[:6]
+        return f"{main}.{us_part}" + (f"+{tz_part}" if tz_part else '')
+    return ts
 
 
 class Scheduler:
@@ -32,11 +40,9 @@ class Scheduler:
     async def start(self):
         """Start the background scheduler."""
         if self.running:
-            logger.warning("Scheduler is already running")
             return
         
         self.running = True
-        logger.info("Starting background scheduler")
         
         # Start background tasks (removed cleanup loop - not needed)
         tasks = [
@@ -46,14 +52,13 @@ class Scheduler:
         try:
             await asyncio.gather(*tasks)
         except Exception as e:
-            logger.error(f"Scheduler error: {str(e)}")
+            print(f"❌ Scheduler error: {str(e)}")
         finally:
             self.running = False
     
     async def stop(self):
         """Stop the background scheduler."""
         self.running = False
-        logger.info("Stopping background scheduler")
     
     async def _daily_processing_loop(self):
         """Daily processing loop for audio analysis."""
@@ -72,7 +77,7 @@ class Scheduler:
                 await asyncio.sleep(3600)  # Wait 1 hour before checking again
                 
             except Exception as e:
-                logger.error(f"Daily processing loop error: {str(e)}")
+                print(f"❌ Daily processing loop error: {str(e)}")
                 await asyncio.sleep(3600)  # Wait 1 hour before retrying
     
     async def _wait_until_processing_time(self):
@@ -87,13 +92,11 @@ class Scheduler:
         
         # Wait until processing time
         wait_seconds = (next_processing - now).total_seconds()
-        logger.info(f"Waiting {wait_seconds} seconds until next processing time")
         
         await asyncio.sleep(wait_seconds)
     
     async def _process_daily_audio(self):
         """Process daily audio for all active users."""
-        logger.info("Starting daily audio processing")
         
         try:
             # Get all users with active Limitless keys
@@ -103,28 +106,32 @@ class Scheduler:
                 try:
                     await self._process_user_audio(user)
                 except Exception as e:
-                    logger.error(f"Error processing audio for user {user['user_id']}: {str(e)}")
+                    print(f"❌ Error processing audio for user {user['user_id']}: {str(e)}")
                     continue
             
-            logger.info("Daily audio processing completed")
             
         except Exception as e:
-            logger.error(f"Daily audio processing failed: {str(e)}")
+            print(f"❌ Daily audio processing failed: {str(e)}")
     
     async def _process_user_audio(self, user: dict):
-        """Process audio for a specific user."""
+        """Process audio for a specific user with enhanced logging."""
         user_id = user["user_id"]
-        logger.info(f"Processing audio for user {user_id}")
+        trigger_type = getattr(self, '_trigger_type', 'manual')  # Default to manual for backward compatibility
+        
+        # Initialize enhanced logger - for scheduled/Update Today processing, always use today's date
+        # For reprocessing, process_date is set by caller (manual_reprocess_yesterday)
+        from .enhanced_logger import get_enhanced_logger
+        from datetime import date
+        enhanced_logger = get_enhanced_logger(user_id, trigger_type, process_date=date.today())
+        
         
         try:
-            # Create processing log entry
-            await self._create_processing_log(user_id, "processing", "Starting audio processing")
-            
             # Get encrypted API key
             encrypted_api_key = await self._get_user_limitless_key(user_id)
             if not encrypted_api_key:
-                logger.warning(f"No Limitless API key found for user {user_id}")
-                await self._create_processing_log(user_id, "failed", "No Limitless API key found")
+                print(f"⚠️ No Limitless API key found for user {user_id}")
+                enhanced_logger.add_error("no_api_key", "No Limitless API key found for user")
+                await enhanced_logger.save_to_database("failed", "No Limitless API key found")
                 return
             
             # Decrypt API key
@@ -134,30 +141,88 @@ class Scheduler:
             )
             
             # Calculate date range (process full day in 2-hour chunks)
+            # Uses user's timezone from database to determine "today" boundaries
             now = datetime.now(pytz.timezone(user.get('timezone', 'UTC')))
             start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)  # Start of day
             
+            # CRITICAL FIX: Check if we already processed today - start from latest timestamp
+            # Implements requirement: "only retrieve audio after the latest timestamp of audio retrieved"
+            # Convert start_of_day to UTC for comparison with DB timestamps
+            start_of_day_utc = start_of_day.astimezone(pytz.UTC)
+            print(f"🔍 Checking for already processed audio today (from {start_of_day_utc.strftime('%Y-%m-%d %H:%M')} UTC / {start_of_day.strftime('%Y-%m-%d %H:%M')} {user.get('timezone', 'UTC')})")
+            # Convert now to UTC for API calls (Limitless uses UTC)
+            now_utc = now.astimezone(pytz.UTC)
+            
+            latest_processed = await self._get_latest_processed_timestamp(user_id, start_of_day_utc)
+            print(f"🔍 Latest processed timestamp (UTC): {latest_processed.strftime('%Y-%m-%d %H:%M')}")
+            
+            # Cap latest_processed at now_utc to handle data from "future" dates due to timezone issues
+            if latest_processed > now_utc:
+                print(f"⚠️ Latest processed ({latest_processed.strftime('%Y-%m-%d %H:%M')}) is in future relative to now ({now_utc.strftime('%Y-%m-%d %H:%M')}), capping to now")
+                latest_processed = now_utc
+            
+            start_time = latest_processed if latest_processed > start_of_day_utc else start_of_day_utc
+            
+            if latest_processed > start_of_day_utc:
+                latest_in_user_tz = latest_processed.astimezone(pytz.timezone(user.get('timezone', 'UTC')))
+                print(f"⏩ Resuming from last processed time: {latest_in_user_tz.strftime('%Y-%m-%d %H:%M')} {user.get('timezone', 'UTC')} / {latest_processed.strftime('%Y-%m-%d %H:%M')} UTC")
+            else:
+                print(f"🆕 Starting fresh from beginning of day")
+            
+            print(f"📊 Processing range (UTC): {start_time.strftime('%Y-%m-%d %H:%M')} to {now_utc.strftime('%Y-%m-%d %H:%M')}")
+            
             # Process the full day in 2-hour chunks
-            current_time = start_of_day
+            # Each chunk downloads one OGG file from Limitless API
+            # total_segments_processed = count of NEW segments stored (skips duplicates)
+            current_time = start_time  # Start from latest processed time, not midnight
             chunk_count = 0
-            while current_time < now:
-                chunk_end = min(current_time + timedelta(hours=2), now)
-                logger.info(f"Processing chunk {chunk_count + 1}: {current_time} to {chunk_end}")
-                await self._process_date_range(user_id, api_key, current_time, chunk_end)
+            total_segments_processed = 0
+            
+            while current_time < now_utc:
+                chunk_end = min(current_time + timedelta(hours=2), now_utc)
+                print(f"📦 Processing chunk {chunk_count + 1}: {current_time.strftime('%H:%M')} UTC to {chunk_end.strftime('%H:%M')} UTC")
+                
+                segments_processed = await self._process_date_range(user_id, api_key, current_time, chunk_end)
+                total_segments_processed += segments_processed
+                
                 current_time = chunk_end
                 chunk_count += 1
             
-            logger.info(f"Processed {chunk_count} chunks for user {user_id}")
             
-            # Update processing log to completed
-            await self._create_processing_log(user_id, "completed", "Audio processing completed successfully")
+            # Save processing log to database
+            # DATABASE WRITE: Creates or updates ONE row in processing_logs table for (user_id, date) combination
+            # DATABASE FIELDS POPULATED:
+            #   - processing_duration_seconds: Calculated from logger start_time to now
+            #   - audio_files_downloaded: Count of OGG files downloaded (incremented by limitless_api._fetch_audio_segments)
+            #   - laughter_events_found: Total detections from YAMNet (incremented by enhanced_logger.increment_laughter_events)
+            #   - duplicates_skipped: Sum of all skip counters (incremented by enhanced_logger.increment_skipped_* methods)
+            #   - trigger_type: 'manual' for Update Today button, 'scheduled' for cron jobs
+            #   - status: 'completed' or 'failed'
+            # TRIGGER: Called after all chunks are processed for the day
+            await enhanced_logger.save_to_database("completed", "Audio processing completed successfully")
+            
+            # Log processing summary to console
+            enhanced_logger.log_processing_summary()
+            
+            # Final orphan cleanup - run ONCE after all chunks are processed
+            # Cleans up OGG files older than 2 days that have no references
+            # NOTE: Cleanup runs silently in background - check enhanced logger for summary
+            now_utc = datetime.utcnow()
+            start_window = now_utc - timedelta(days=2)
+            await self._cleanup_orphaned_files(user_id, start_window, now_utc)
             
         except Exception as e:
-            logger.error(f"Error processing user audio: {str(e)}")
-            await self._create_processing_log(user_id, "failed", f"Processing failed: {str(e)}")
+            print(f"❌ Error processing user audio: {str(e)}")
+            enhanced_logger.add_error("processing_failed", str(e), context={"user_id": user_id})
+            await enhanced_logger.save_to_database("failed", f"Processing failed: {str(e)}")
+            enhanced_logger.log_processing_summary()
     
-    async def _process_date_range(self, user_id: str, api_key: str, start_time: datetime, end_time: datetime):
-        """Process audio for a specific date range."""
+    async def _process_date_range(self, user_id: str, api_key: str, start_time: datetime, end_time: datetime) -> int:
+        """Process audio for a specific date range with enhanced logging.
+        
+        Returns:
+            Number of NEW segments processed and stored (excludes duplicates)
+        """
         try:
             # Get audio segments from Limitless API
             segments = await limitless_api_service.get_audio_segments(
@@ -165,26 +230,39 @@ class Scheduler:
             )
             
             if not segments:
-                logger.info(f"No audio segments found for user {user_id} from {start_time} to {end_time}")
-                return
+                return 0
             
             # Process each segment, checking for duplicates
+            processed_count = 0
             for segment in segments:
+                # Get file_path for logging (handle both dict and object formats)
+                file_path = segment['file_path'] if isinstance(segment, dict) else segment.file_path
+                
                 # Check if this specific segment already exists and is processed
+                # Uses time range overlap detection to identify duplicates
                 if await self._segment_already_processed(user_id, segment):
-                    # Get file_path for logging (handle both dict and object formats)
-                    file_path = segment['file_path'] if isinstance(segment, dict) else segment.file_path
-                    logger.info(f"Segment with file {os.path.basename(file_path)} already processed for user {user_id}")
-                    continue
+                    # CRITICAL: Delete the audio file even if already processed
+                    # Prevents disk space buildup from duplicate downloads
+                    await self._delete_audio_file(file_path, user_id)
+                    continue  # Don't increment processed_count
                 
                 # Store the segment in the database first
                 segment_id = await self._store_audio_segment(user_id, segment)
                 if segment_id:
                     # Process the audio segment
                     await self._process_audio_segment(user_id, segment, segment_id)
+                    processed_count += 1
+            
+            # Already handled by run-once guard earlier; keep end-of-chunk cleanup disabled
+            
+            return processed_count
             
         except Exception as e:
-            logger.error(f"Error processing date range: {str(e)}")
+            print(f"❌ Error processing date range: {str(e)}")
+            if enhanced_logger:
+                enhanced_logger.add_error("date_range_error", str(e), 
+                    context={"start_time": start_time.isoformat(), "end_time": end_time.isoformat()})
+            return 0
     
     async def _store_audio_segment(self, user_id: str, segment) -> Optional[str]:
         """Store audio segment in database."""
@@ -202,7 +280,7 @@ class Scheduler:
             SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
             
             if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-                logger.error("Supabase credentials not found")
+                print(f"❌ Supabase credentials not found")
                 return None
             
             supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -234,32 +312,45 @@ class Scheduler:
             }).execute()
             
             if result.data:
-                logger.info(f"Stored audio segment {segment_id} in database")
                 return segment_id
             else:
-                logger.error(f"Failed to store audio segment {segment_id}")
+                print(f"❌ Failed to store audio segment {segment_id}")
                 return None
                 
         except Exception as e:
-            logger.error(f"Error storing audio segment: {str(e)}")
+            print(f"❌ Error storing audio segment: {str(e)}")
             return None
 
     async def _process_audio_segment(self, user_id: str, segment, segment_id: str):
         """Process a single audio segment for laughter detection."""
         try:
+            
             # Handle both dict and object formats
             if isinstance(segment, dict):
                 file_path = segment['file_path']
             else:
                 file_path = segment.file_path
             
+            
             # Run YAMNet processing on actual audio file
             laughter_events = await yamnet_processor.process_audio_file(
                 file_path, user_id
             )
             
+            # Track laughter events found for database logging
+            # DATABASE FIELD: This increments laughter_events_found counter which is saved to processing_logs.laughter_events_found
+            # TRIGGER: Called here after YAMNet processing, before storing detections (which may skip duplicates)
+            # Note: This counts ALL detections from YAMNet, even if some are later skipped as duplicates
+            from .enhanced_logger import get_current_logger
+            enhanced_logger = get_current_logger()
+            if enhanced_logger and laughter_events:
+                enhanced_logger.increment_laughter_events(len(laughter_events))
+            
             if laughter_events:
-                # Store laughter detection results
+                # Store laughter detection results in database with duplicate prevention
+                # DATABASE WRITE: Inserts into laughter_detections table (some may be skipped as duplicates)
+                # TRIGGER: enhanced_logger.increment_skipped_*() methods are called inside _store_laughter_detections()
+                # for each duplicate that is skipped (time-window, clip-path, missing-file)
                 await self._store_laughter_detections(user_id, segment_id, laughter_events)
             
             # Mark segment as processed
@@ -268,8 +359,12 @@ class Scheduler:
             # SECURITY: Delete the audio file after processing (as per requirements)
             await self._delete_audio_file(file_path, user_id)
             
+            
         except Exception as e:
-            logger.error(f"Error processing audio segment: {str(e)}")
+            print(f"❌ ❌ Error processing audio segment {segment_id}: {str(e)}")
+            print(f"❌ 🔍 DEBUG: Exception type: {type(e).__name__}")
+            import traceback
+            print(f"❌ 🔍 DEBUG: Full traceback: {traceback.format_exc()}")
     
     async def _get_active_users(self) -> list:
         """Get all users with active Limitless API keys."""
@@ -291,58 +386,10 @@ class Scheduler:
             return []
             
         except Exception as e:
-            logger.error(f"Error getting active users: {str(e)}")
+            print(f"❌ Error getting active users: {str(e)}")
             return []
     
-    async def _create_processing_log(self, user_id: str, status: str, message: str):
-        """Create or update processing log entry."""
-        try:
-            import os
-            from dotenv import load_dotenv
-            from supabase import create_client, Client
-            from datetime import date
-            
-            # Load environment variables
-            load_dotenv()
-            
-            # Use service role key for admin operations
-            SUPABASE_URL = os.getenv('SUPABASE_URL')
-            SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
-            
-            if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-                logger.error("Supabase credentials not found")
-                return
-            
-            supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-            
-            # Check if log entry exists for today
-            today = date.today()
-            existing_logs = supabase.table('processing_logs').select('*').eq('user_id', user_id).eq('date', today.isoformat()).execute().data
-            
-            if existing_logs:
-                # Update existing log
-                log_id = existing_logs[0]['id']
-                supabase.table('processing_logs').update({
-                    'status': status,
-                    'message': message,
-                    'last_processed': datetime.now(pytz.UTC).isoformat()
-                }).eq('id', log_id).execute()
-                logger.info(f"Updated processing log for user {user_id}: {status} - {message}")
-            else:
-                # Create new log entry
-                supabase.table('processing_logs').insert({
-                    'user_id': user_id,
-                    'date': today.isoformat(),
-                    'status': status,
-                    'message': message,
-                    'processed_segments': 0,
-                    'total_segments': 0,
-                    'last_processed': datetime.now(pytz.UTC).isoformat()
-                }).execute()
-                logger.info(f"Created processing log for user {user_id}: {status} - {message}")
-                
-        except Exception as e:
-            logger.error(f"Error creating processing log: {str(e)}")
+    # REMOVED: _create_processing_log - replaced by enhanced_logger
     
     async def _get_user_limitless_key(self, user_id: str) -> Optional[str]:
         """Get encrypted Limitless API key for user."""
@@ -359,7 +406,7 @@ class Scheduler:
             SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
             
             if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-                logger.error("Supabase credentials not found")
+                print(f"❌ Supabase credentials not found")
                 return None
             
             supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -371,8 +418,52 @@ class Scheduler:
             return None
             
         except Exception as e:
-            logger.error(f"Error getting user limitless key: {str(e)}")
+            print(f"❌ Error getting user limitless key: {str(e)}")
             return None
+    
+    async def _get_latest_processed_timestamp(self, user_id: str, start_of_day: datetime) -> datetime:
+        """Get the latest processed timestamp for today to enable incremental processing."""
+        try:
+            import os
+            from dotenv import load_dotenv
+            from supabase import create_client
+            
+            # Load environment variables
+            load_dotenv()
+            
+            # Use service role key for admin operations
+            SUPABASE_URL = os.getenv('SUPABASE_URL')
+            SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+            
+            if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+                print(f"❌ Supabase credentials not found")
+                return start_of_day
+            
+            supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            
+            # Query audio_segments for today's data to find latest end_time
+            # This tells us what's already been downloaded from Limitless
+            result = supabase.table("audio_segments").select("start_time,end_time").eq("user_id", user_id).gte("start_time", start_of_day.isoformat()).order("end_time", desc=True).limit(1).execute()
+            
+            if result.data and len(result.data) > 0:
+                latest_end = result.data[0]['end_time']
+                latest_start = result.data[0]['start_time']
+                print(f"  📋 Found latest segment: {latest_start} to {latest_end}")
+                # Parse and return latest processed timestamp
+                if isinstance(latest_end, str):
+                    latest_dt = datetime.fromisoformat(_norm_iso(latest_end.replace('Z', '+00:00')))
+                    # Ensure timezone-aware
+                    if latest_dt.tzinfo is None:
+                        latest_dt = latest_dt.replace(tzinfo=pytz.UTC)
+                    return latest_dt
+            
+            print(f"  📋 No segments found for today - starting fresh")
+            # No data processed today - start from beginning of day
+            return start_of_day
+            
+        except Exception as e:
+            print(f"❌ Error getting latest processed timestamp: {str(e)}")
+            return start_of_day
     
     async def _is_time_range_processed(self, user_id: str, start_time: datetime, end_time: datetime) -> bool:
         """Check if time range has already been processed for user."""
@@ -384,7 +475,7 @@ class Scheduler:
             return len(result.data) > 0 if result.data else False
             
         except Exception as e:
-            logger.error(f"Error checking if time range processed: {str(e)}")
+            print(f"❌ Error checking if time range processed: {str(e)}")
             return False
     
     async def _mark_time_range_processed(self, user_id: str, start_time: datetime, end_time: datetime):
@@ -398,7 +489,7 @@ class Scheduler:
             }).eq("user_id", user_id).gte("start_time", start_time.isoformat()).lte("end_time", end_time.isoformat()).execute()
             
         except Exception as e:
-            logger.error(f"Error marking time range as processed: {str(e)}")
+            print(f"❌ Error marking time range as processed: {str(e)}")
     
     async def _store_laughter_detections(self, user_id: str, segment_id: str, laughter_events: list):
         """Store laughter detection results in database with duplicate prevention."""
@@ -408,6 +499,16 @@ class Scheduler:
             from supabase import create_client, Client
             from datetime import datetime, timedelta
             import pytz
+            from .enhanced_logger import get_current_logger
+            
+            # Track statistics
+            total_detected = len(laughter_events)
+            skipped_time_window = 0
+            skipped_clip_path = 0
+            skipped_missing_file = 0
+            stored_count = 0
+            
+            # CRITICAL DEBUG: Entry point
             
             # Load environment variables
             load_dotenv()
@@ -417,7 +518,7 @@ class Scheduler:
             SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
             
             if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-                logger.error("Supabase credentials not found")
+                print(f"❌ Supabase credentials not found")
                 return
             
             supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -431,7 +532,11 @@ class Scheduler:
                     # Get the segment start time from the database
                     segment_result = supabase.table("audio_segments").select("start_time").eq("id", segment_id).execute()
                     if segment_result.data:
-                        segment_start = datetime.fromisoformat(segment_result.data[0]["start_time"].replace('Z', '+00:00'))
+                        raw_start = segment_result.data[0]["start_time"].replace('Z', '+00:00')
+                        segment_start = datetime.fromisoformat(_norm_iso(raw_start))
+                        # Ensure timezone-aware
+                        if segment_start.tzinfo is None:
+                            segment_start = segment_start.replace(tzinfo=pytz.UTC)
                         # Add the event timestamp (in seconds) to the segment start time
                         if isinstance(event.timestamp, (int, float)):
                             event_datetime = segment_start + timedelta(seconds=float(event.timestamp))
@@ -443,24 +548,86 @@ class Scheduler:
                         event_datetime = datetime.now(pytz.UTC)
                 
                 # DUPLICATE PREVENTION: Check for existing laughter detection within 5 seconds
+                # IMPORTANT: Also check class_id - same timestamp with different class_id is NOT a duplicate
+                # (e.g., Laughter class_id=13 and Giggle class_id=15 at same timestamp are different detections)
+                #
+                # WHY 5 SECONDS: YAMNet uses overlapping detection windows (patch_duration=0.48s), so the same
+                # laughter event can be detected multiple times at slightly different timestamps. A 5-second
+                # window catches these false duplicates while still allowing genuine laughter events that are
+                # close together.
+                #
+                # DATABASE RELATIONSHIP: This is a "soft" duplicate check (time window) before attempting
+                # database insertion. The database also has a "hard" constraint (unique_laughter_timestamp_user_class)
+                # that prevents exact duplicates at the same (user_id, timestamp, class_id).
                 time_window = timedelta(seconds=5)
                 start_window = event_datetime - time_window
                 end_window = event_datetime + time_window
                 
-                existing_detections = supabase.table("laughter_detections").select("id, timestamp").eq("user_id", user_id).gte("timestamp", start_window.isoformat()).lte("timestamp", end_window.isoformat()).execute()
+                event_class_id = getattr(event, 'class_id', None)
+                # Query database for existing detections in the time window
+                # Selects: id, timestamp, class_id - we only need class_id to match for duplicates
+                existing_detections = supabase.table("laughter_detections").select("id, timestamp, class_id").eq("user_id", user_id).gte("timestamp", start_window.isoformat()).lte("timestamp", end_window.isoformat()).execute()
                 
+                # Filter to only check detections with the SAME class_id (different class_ids at same timestamp are unique)
+                # This matches the database constraint unique_laughter_timestamp_user_class behavior
                 if existing_detections.data:
-                    logger.info(f"🚫 Duplicate laughter detection prevented: {event_datetime} (similar timestamp within 5s already exists)")
-                    continue  # Skip this duplicate
+                    matching_class_detections = [
+                        d for d in existing_detections.data 
+                        if d.get('class_id') == event_class_id
+                    ]
+                    if matching_class_detections:
+                        skipped_time_window += 1
+                        enhanced_logger = get_current_logger()
+                        if enhanced_logger:
+                            enhanced_logger.increment_skipped_time_window()
+                        ts_str = event_datetime.astimezone(pytz.timezone('America/Los_Angeles')).strftime('%H:%M:%S')
+                        print(f"⏭️  SKIPPED (duplicate within 5s): {ts_str} prob={event.probability:.3f} - Already exists at {matching_class_detections[0]['timestamp']} (class_id={event_class_id})")
+                        # DISABLED: Duplicate clip deletion - investigating missing clips bug
+                        # try:
+                        #     if getattr(event, 'clip_path', None):
+                        #         import os
+                        #         if os.path.exists(event.clip_path):
+                        #             os.remove(event.clip_path)
+                        #             print(f"🧹 Deleted duplicate clip (time-window): {os.path.basename(event.clip_path)}")
+                        # except Exception as cleanup_err:
+                        #     print(f"⚠️ ⚠️ Failed to delete duplicate clip: {str(cleanup_err)}")
+                        continue  # Skip this duplicate
                 
                 # DUPLICATE PREVENTION: Check for existing clip path
                 if event.clip_path:
                     existing_clip = supabase.table("laughter_detections").select("id").eq("clip_path", event.clip_path).execute()
                     if existing_clip.data:
-                        logger.info(f"🚫 Duplicate clip path prevented: {event.clip_path}")
+                        skipped_clip_path += 1
+                        enhanced_logger = get_current_logger()
+                        if enhanced_logger:
+                            enhanced_logger.increment_skipped_clip_path()
+                        ts_str = event_datetime.astimezone(pytz.timezone('America/Los_Angeles')).strftime('%H:%M:%S')
+                        print(f"⏭️  SKIPPED (duplicate clip path): {ts_str} prob={event.probability:.3f} - Clip already exists: {os.path.basename(event.clip_path)}")
+                        # DISABLED: Duplicate clip deletion - investigating missing clips bug
+                        # try:
+                        #     import os
+                        #     if os.path.exists(event.clip_path):
+                        #         os.remove(event.clip_path)
+                        #         print(f"🧹 Deleted duplicate clip (path): {os.path.basename(event.clip_path)}")
+                        # except Exception as cleanup_err:
+                        #     print(f"⚠️ ⚠️ Failed to delete duplicate clip by path: {str(cleanup_err)}")
                         continue  # Skip this duplicate
                 
                 # Store the laughter detection (no duplicates found)
+                # Only store if clip file actually exists (prevent 404s)
+                clip_exists = os.path.exists(event.clip_path) if event.clip_path else False
+                if not clip_exists:
+                    skipped_missing_file += 1
+                    enhanced_logger = get_current_logger()
+                    if enhanced_logger:
+                        enhanced_logger.increment_skipped_missing_file()
+                    ts_str = event_datetime.astimezone(pytz.timezone('America/Los_Angeles')).strftime('%H:%M:%S')
+                    print(f"⏭️  SKIPPED (missing clip file): {ts_str} prob={event.probability:.3f} - File not found: {os.path.basename(event.clip_path) if event.clip_path else 'None'}")
+                    continue
+                
+                # Log clip file status before database insertion
+                file_size = os.path.getsize(event.clip_path) if event.clip_path else 0
+                
                 try:
                     supabase.table("laughter_detections").insert({
                         "user_id": user_id,
@@ -472,16 +639,57 @@ class Scheduler:
                         "class_name": getattr(event, 'class_name', None),
                         "notes": ""
                     }).execute()
-                    logger.info(f"✅ Laughter detection stored: {event_datetime} (prob: {event.probability:.3f})")
+                    stored_count += 1
                 except Exception as insert_error:
                     # Handle unique constraint violations gracefully
-                    if "unique_laughter_timestamp_user" in str(insert_error) or "unique_laughter_clip_path" in str(insert_error):
-                        logger.info(f"🚫 Duplicate prevented by database constraint: {event_datetime}")
+                    # DATABASE CONSTRAINT: unique_laughter_timestamp_user_class on (user_id, timestamp, class_id)
+                    # This is the final safety net - catches duplicates that passed the time-window check
+                    # (e.g., exact same timestamp+class_id detected in different processing sessions)
+                    #
+                    # CONSTRAINT NAME: unique_laughter_timestamp_user_class
+                    # CONSTRAINT FIELDS: (user_id, timestamp, class_id) - all three must match for violation
+                    # CONSTRAINT PURPOSE: Ensures database-level uniqueness even if application-level checks miss something
+                    #
+                    # Note: unique_laughter_timestamp_user_class includes class_id, so different classes at same timestamp are allowed
+                    # Also check unique_laughter_clip_path constraint (prevents duplicate clip file paths)
+                    if "unique_laughter_timestamp_user_class" in str(insert_error) or "unique_laughter_clip_path" in str(insert_error):
+                        skipped_time_window += 1
+                        ts_str = event_datetime.astimezone(pytz.timezone('America/Los_Angeles')).strftime('%H:%M:%S')
+                        print(f"⏭️  SKIPPED (database constraint): {ts_str} prob={event.probability:.3f} - Unique constraint violation (same user_id, timestamp, AND class_id already exists)")
+                        # TEMPORARILY DISABLED: Duplicate clip deletion to debug
+                        # try:
+                        #     import os
+                        #     if getattr(event, 'clip_path', None) and os.path.exists(event.clip_path):
+                        #         os.remove(event.clip_path)
+                        #         print(f"🧹 Deleted clip after constraint duplicate: {os.path.basename(event.clip_path)}")
+                        # except Exception as cleanup_err:
+                        #     print(f"⚠️ ⚠️ Failed to delete clip after duplicate constraint: {str(cleanup_err)}")
                     else:
-                        logger.error(f"Error inserting laughter detection: {str(insert_error)}")
+                        print(f"❌ Error inserting laughter detection: {str(insert_error)}")
+            
+            # Summary logging - use print() for visibility with uvicorn
+            # DATABASE MAPPING: These counters are aggregated by EnhancedProcessingLogger and saved to processing_logs table:
+            # - total_detected -> used to calculate laughter_events_found (set via enhanced_logger.increment_laughter_events())
+            # - skipped_time_window + skipped_clip_path + skipped_missing_file -> duplicates_skipped field
+            # - stored_count -> actual rows inserted into laughter_detections table
+            #
+            # TRIGGER: enhanced_logger.increment_laughter_events(len(laughter_events)) is called from
+            # _process_audio_segment() to track total detected. Skip counters are incremented above via
+            # enhanced_logger.increment_skipped_*() methods which update the logger's internal counters.
+            print("=" * 80)
+            print(f"📊 DETECTION SUMMARY for segment {segment_id[:8]}:")
+            print(f"   🎭 Total detected by YAMNet:     {total_detected}")
+            print(f"   ⏭️  Skipped (time window dup):   {skipped_time_window}")
+            print(f"   ⏭️  Skipped (clip path dup):      {skipped_clip_path}")
+            print(f"   ⏭️  Skipped (missing file):      {skipped_missing_file}")
+            print(f"   ✅ Successfully stored:           {stored_count}")
+            print(f"   📉 Total skipped:                 {skipped_time_window + skipped_clip_path + skipped_missing_file}")
+            print("=" * 80)
+            
+            # Skip counters already incremented above during the loop via enhanced_logger.increment_skipped_*() methods
             
         except Exception as e:
-            logger.error(f"Error storing laughter detections: {str(e)}")
+            print(f"❌ Error storing laughter detections: {str(e)}")
     
     async def _segment_already_processed(self, user_id: str, segment) -> bool:
         """Check if a specific segment already exists and is processed."""
@@ -499,7 +707,7 @@ class Scheduler:
             SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
             
             if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-                logger.error("Supabase credentials not found")
+                print(f"❌ Supabase credentials not found")
                 return False
             
             supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -514,10 +722,10 @@ class Scheduler:
             
             # Parse the new segment times
             try:
-                new_start = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                new_end = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                new_start = datetime.fromisoformat(_norm_iso(start_time.replace('Z', '+00:00')))
+                new_end = datetime.fromisoformat(_norm_iso(end_time.replace('Z', '+00:00')))
             except Exception as e:
-                logger.error(f"Error parsing segment times: {str(e)}")
+                print(f"❌ Error parsing segment times: {str(e)}")
                 return False
             
             # Get all existing segments for this user
@@ -529,23 +737,35 @@ class Scheduler:
             # Check for overlapping segments
             for existing_segment in result.data:
                 try:
-                    existing_start = datetime.fromisoformat(existing_segment['start_time'].replace('Z', '+00:00'))
-                    existing_end = datetime.fromisoformat(existing_segment['end_time'].replace('Z', '+00:00'))
+                    existing_start = datetime.fromisoformat(_norm_iso(existing_segment['start_time'].replace('Z', '+00:00')))
+                    existing_end = datetime.fromisoformat(_norm_iso(existing_segment['end_time'].replace('Z', '+00:00')))
+                    
+                    # Ensure timezone-aware
+                    if existing_start.tzinfo is None:
+                        existing_start = existing_start.replace(tzinfo=pytz.UTC)
+                    if existing_end.tzinfo is None:
+                        existing_end = existing_end.replace(tzinfo=pytz.UTC)
+                    if new_start.tzinfo is None:
+                        new_start = new_start.replace(tzinfo=pytz.UTC)
+                    if new_end.tzinfo is None:
+                        new_end = new_end.replace(tzinfo=pytz.UTC)
                     
                     # Check if time ranges overlap
                     # Two time ranges overlap if: start1 < end2 AND start2 < end1
                     if new_start < existing_end and existing_start < new_end:
-                        logger.info(f"Found overlapping segment: {existing_segment['id']} ({existing_start} - {existing_end}) overlaps with ({new_start} - {new_end})")
-                        return existing_segment['processed']
+                        seg_id = existing_segment.get('id', 'unknown')
+                        # If already processed, don't reprocess
+                        if existing_segment['processed']:
+                            return True
                         
                 except Exception as e:
-                    logger.warning(f"Error parsing existing segment times: {str(e)}")
+                    print(f"⚠️ Error parsing existing segment times: {str(e)}")
                     continue
             
             return False
             
         except Exception as e:
-            logger.error(f"Error checking if segment already processed: {str(e)}")
+            print(f"❌ Error checking if segment already processed: {str(e)}")
             return False
 
     async def _delete_audio_file(self, file_path: str, user_id: str):
@@ -553,15 +773,123 @@ class Scheduler:
         try:
             import os
             
-            # Use plaintext file path directly (no decryption needed)
             if os.path.exists(file_path):
                 os.remove(file_path)
-                logger.info(f"✅ Deleted audio file: {file_path}")
             else:
-                logger.warning(f"⚠️ Audio file not found: {file_path}")
+                print(f"⚠️ ⚠️ Audio file not found: {file_path}")
                 
         except Exception as e:
-            logger.error(f"❌ Error deleting audio file: {str(e)}")
+            print(f"❌ ❌ Error deleting audio file: {str(e)}")
+
+    async def _cleanup_orphaned_files(self, user_id: str, start_time: datetime, end_time: datetime):
+        """Clean up orphaned audio files from previous runs that should have been deleted."""
+        try:
+            import os
+            from dotenv import load_dotenv
+            from supabase import create_client
+            
+            # Load environment variables
+            load_dotenv()
+            
+            SUPABASE_URL = os.getenv('SUPABASE_URL')
+            SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+            
+            if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+                print(f"CLEANUP: Supabase credentials not found - skipping orphan cleanup")
+                return
+            
+            supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            
+            # Find all processed segments for this user (check ALL processed segments)
+            # This catches orphaned files from any previous run
+            result = supabase.table("audio_segments").select("id, file_path, start_time, end_time").eq("user_id", user_id).eq("processed", True).execute()
+            
+            # Step 1: Check files from database segments
+            db_files_cleaned = 0
+            if result.data:
+                for segment in result.data:
+                    file_path = segment.get("file_path")
+                    if file_path:
+                        # Normalize path - remove ./ prefix if present, handle relative paths
+                        normalized_path = file_path.lstrip('./')
+                        # Construct full path relative to project root
+                        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                        full_path = os.path.join(project_root, normalized_path)
+                        
+                        if os.path.exists(full_path):
+                            print(f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {os.path.basename(full_path)}")
+                            await self._delete_audio_file(full_path, user_id)
+                            db_files_cleaned += 1
+                        elif os.path.exists(file_path):
+                            # Also try original path (in case it's absolute)
+                            print(f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {os.path.basename(file_path)}")
+                            await self._delete_audio_file(file_path, user_id)
+                            db_files_cleaned += 1
+            
+            # Step 2: Scan disk for files without database records
+            disk_files_cleaned = 0
+            
+            # Get all file_paths from database (for comparison)
+            all_db_paths = set()
+            if result.data:
+                for seg in result.data:
+                    fp = seg.get("file_path", "")
+                    if fp:
+                        normalized = fp.lstrip('./')
+                        all_db_paths.add(normalized.lower())  # Case-insensitive comparison
+            
+            # Get all clip_paths from laughter_detections table
+            laughter_result = supabase.table("laughter_detections").select("clip_path").eq("user_id", user_id).execute()
+            all_clip_paths = set()
+            if laughter_result.data:
+                for detection in laughter_result.data:
+                    cp = detection.get("clip_path", "")
+                    if cp:
+                        # Normalize to just filename for comparison
+                        clip_filename = os.path.basename(cp)
+                        all_clip_paths.add(clip_filename.lower())
+            
+            # Scan user's audio directory for OGG files
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            user_audio_dir = os.path.join(project_root, "uploads", "audio", user_id)
+            
+            if os.path.exists(user_audio_dir):
+                for filename in os.listdir(user_audio_dir):
+                    if filename.endswith('.ogg'):
+                        file_path = os.path.join(user_audio_dir, filename)
+                        # Check if this file is in the database
+                        relative_path = os.path.join("uploads", "audio", user_id, filename)
+                        if relative_path.lower() not in all_db_paths:
+                            # File exists on disk but not in database - true orphan
+                            print(f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {filename}")
+                            await self._delete_audio_file(file_path, user_id)
+                            disk_files_cleaned += 1
+            
+            # TEMPORARILY DISABLED: WAV clip deletion to debug missing file bug
+            # clips_dir = os.path.join(project_root, "uploads", "clips")
+            # if os.path.exists(clips_dir):
+            #     for filename in os.listdir(clips_dir):
+            #         if filename.endswith('.wav'):
+            #             file_path = os.path.join(clips_dir, filename)
+            #             if filename.lower() not in all_clip_paths:
+            #                 # WAV file exists on disk but not referenced in laughter_detections - true orphan
+            #                 print(f"⚠️ 🗑️ CLEANUP: Found orphaned WAV clip (no DB record): {filename}")
+            #                 await self._delete_audio_file(file_path, user_id)
+            #                 disk_files_cleaned += 1
+            #                 print(f"⚠️ 🗑️ CLEANUP: Deleted orphaned WAV clip: {filename}")
+            #             else:
+            #                 print(f"✅ CLEANUP: WAV clip is referenced in DB: {filename}")
+            
+            total_cleaned = db_files_cleaned + disk_files_cleaned
+            
+            if total_cleaned > 0:
+                print(f"🧹 CLEANUP: Deleted {total_cleaned} orphaned OGG file(s)")
+            # Silent success if no orphans found - don't clutter logs
+                
+        except Exception as e:
+            print(f"❌ ❌ CLEANUP ERROR: Error cleaning up orphaned files: {str(e)}")
+            import traceback
+            print(f"❌ 🔍 CLEANUP DEBUG: Full traceback: {traceback.format_exc()}")
 
     async def _mark_segment_processed(self, segment_id: str):
         """Mark audio segment as processed."""
@@ -578,7 +906,7 @@ class Scheduler:
             SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
             
             if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-                logger.error("Supabase credentials not found")
+                print(f"❌ Supabase credentials not found")
                 return
             
             supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -588,7 +916,7 @@ class Scheduler:
             }).eq("id", segment_id).execute()
             
         except Exception as e:
-            logger.error(f"Error marking segment as processed: {str(e)}")
+            print(f"❌ Error marking segment as processed: {str(e)}")
 
 
 # Global scheduler instance

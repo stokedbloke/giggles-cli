@@ -7,13 +7,11 @@ required by the Limitless API and YAMNet model.
 
 import os
 import tempfile
-import logging
 from typing import Optional, Tuple
 import librosa
 import soundfile as sf
 import numpy as np
 
-logger = logging.getLogger(__name__)
 
 
 class AudioUtils:
@@ -66,11 +64,11 @@ class AudioUtils:
             # Save as WAV file
             sf.write(output_path, audio_data, target_sample_rate)
             
-            logger.info(f"Audio converted successfully: {input_path} -> {output_path}")
+            print(f"Audio converted successfully: {input_path} -> {output_path}")
             return output_path
             
         except Exception as e:
-            logger.error(f"Audio conversion failed: {str(e)}")
+            print(f"❌ Audio conversion failed: {str(e)}")
             raise ValueError(f"Failed to convert audio: {str(e)}")
     
     @staticmethod
@@ -98,7 +96,7 @@ class AudioUtils:
             return True
             
         except Exception as e:
-            logger.error(f"Audio validation failed: {str(e)}")
+            print(f"❌ Audio validation failed: {str(e)}")
             return False
     
     @staticmethod
@@ -129,7 +127,7 @@ class AudioUtils:
             }
             
         except Exception as e:
-            logger.error(f"Failed to get audio info: {str(e)}")
+            print(f"❌ Failed to get audio info: {str(e)}")
             raise ValueError(f"Could not read audio file: {str(e)}")
     
     @staticmethod
@@ -185,11 +183,11 @@ class AudioUtils:
             # Save clip
             sf.write(output_path, clip_data, sample_rate)
             
-            logger.info(f"Audio clip extracted: {start_time}s-{end_time}s -> {output_path}")
+            print(f"Audio clip extracted: {start_time}s-{end_time}s -> {output_path}")
             return output_path
             
         except Exception as e:
-            logger.error(f"Audio clip extraction failed: {str(e)}")
+            print(f"❌ Audio clip extraction failed: {str(e)}")
             raise ValueError(f"Failed to extract audio clip: {str(e)}")
     
     @staticmethod
@@ -216,8 +214,8 @@ class AudioUtils:
             return normalized
             
         except Exception as e:
-            logger.error(f"Audio normalization failed: {str(e)}")
-            return audio_data
+            print(f"❌ Audio normalization failed: {str(e)}")
+            raise ValueError(f"Failed to normalize audio: {str(e)}")
     
     @staticmethod
     def remove_silence(
@@ -274,5 +272,5 @@ class AudioUtils:
                 return np.concatenate(result_segments)
             
         except Exception as e:
-            logger.error(f"Silence removal failed: {str(e)}")
-            return audio_data
+            print(f"❌ Silence removal failed: {str(e)}")
+            raise ValueError(f"Failed to remove silence: {str(e)}")

@@ -8,17 +8,17 @@
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     line-height: 1.6;
     color: #333;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: #f8f9fa;
     min-height: 100vh;
 }
 
 .app-container {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 20px;
+    padding: 0; /* remove outer padding to eliminate top spacing */
     min-height: 100vh;
 }
 
@@ -175,9 +175,15 @@ body {
     transform: translateY(-2px);
 }
 
-/* Setup Container */
+/* Setup Container - Scrollable content area */
 .setup-container {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
     text-align: center;
+    padding: 20px;
+    padding-bottom: 60px; /* Space for bottom nav */
 }
 
 .setup-container h2 {
@@ -247,6 +253,108 @@ body {
     gap: 15px;
     justify-content: center;
     flex-wrap: wrap;
+    position: sticky; /* keep visible while scrolling the list */
+    bottom: 80px; /* sit just above the fixed bottom nav */
+    z-index: 90;
+}
+
+/* Settings Screen - Scrollable content area */
+.settings-container {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    padding: 20px;
+    padding-bottom: 60px; /* Space for bottom nav */
+    max-width: 400px;
+    margin: 0 auto;
+}
+
+.settings-container h2 {
+    text-align: center;
+    margin-bottom: 30px;
+    color: #374151;
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.settings-section {
+    margin-bottom: 30px;
+    padding: 20px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.settings-section h3 {
+    margin-bottom: 15px;
+    color: #374151;
+    font-size: 1.1rem;
+    font-weight: 500;
+    border-bottom: 1px solid #e5e7eb;
+    padding-bottom: 8px;
+}
+
+.settings-section .btn {
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+.settings-section .btn:last-child {
+    margin-bottom: 0;
+}
+
+.settings-help-text {
+    font-size: 0.9rem;
+    color: #666;
+    margin-bottom: 15px;
+    line-height: 1.5;
+}
+
+.reprocess-form {
+    margin-top: 15px;
+}
+
+.reprocess-form .input-group {
+    margin-bottom: 15px;
+}
+
+.reprocess-status {
+    margin-top: 15px;
+    padding: 10px;
+    border-radius: 5px;
+    background: #f8f9fa;
+}
+
+.reprocess-status.hidden {
+    display: none;
+}
+
+.reprocess-status .status-message {
+    color: #0066cc;
+    margin: 0;
+}
+
+.reprocess-status .status-success {
+    color: #28a745;
+    margin: 0;
+}
+
+.reprocess-status .status-error {
+    color: #dc3545;
+    margin: 0;
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    background-color: #f3f4f6;
 }
 
 .management-buttons .btn {
@@ -254,12 +362,29 @@ body {
     min-width: 150px;
 }
 
-/* Detail View */
+/* Detail View - Scrollable content area */
+#day-detail {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    background: white;
+    border-radius: 0; /* Remove border-radius for full-width */
+    padding: 20px;
+    padding-bottom: 60px; /* Space for bottom nav */
+    margin: 0; /* Override .section margin */
+    box-shadow: none; /* Remove box-shadow for cleaner look */
+    backdrop-filter: none; /* Remove backdrop-filter */
+    border: none; /* Remove border */
+    display: flex; /* Make it a flex container */
+    flex-direction: column; /* Stack children vertically */
+}
+
 .detail-header {
     display: flex;
     align-items: center;
     gap: 20px;
-    margin-bottom: 30px;
+    margin-bottom: 20px;
 }
 
 .detail-header h2 {
@@ -271,9 +396,9 @@ body {
 .detail-controls {
     display: flex;
     flex-direction: column;
-    gap: 20px;
-    margin-bottom: 30px;
-    padding: 20px;
+    gap: 15px;
+    margin-bottom: 20px;
+    padding: 15px;
     background: #f8f9fa;
     border-radius: 10px;
 }
@@ -281,7 +406,7 @@ body {
 .filter-controls {
     display: flex;
     align-items: center;
-    gap: 15px;
+    gap: 10px;
     flex-wrap: wrap;
 }
 
@@ -306,6 +431,7 @@ body {
     overflow-x: auto;
     border-radius: 10px;
     box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    padding-bottom: 100px; /* Space for bottom nav */
 }
 
 table {
@@ -456,7 +582,8 @@ th {
     .detail-header {
         flex-direction: column;
         align-items: flex-start;
-        gap: 15px;
+        gap: 10px;
+        margin-bottom: 15px;
     }
     
     .filter-controls {
@@ -557,5 +684,298 @@ th {
     
     .toast-container {
         display: none;
+    }
+}
+
+/* ========================================
+   MOBILE APP REDESIGN STYLES
+   ======================================== */
+
+/* Color Palette Variables */
+:root {
+    --color-black: #000000;
+    --color-orange: #FF6B35;
+    --color-blue: #1E3A8A;
+    --color-white: #F8F9FA;
+    --color-yellow: #FFD700;
+    --color-pink: #FFB6C1;
+    --text-dark: #000000;
+    --text-light: #FFFFFF;
+}
+
+/* Mobile App Container - Fixed viewport, prevents scrolling between screens */
+.mobile-app {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: #f8f9fa;
+    z-index: 1;
+}
+
+/* Mobile Header */
+.mobile-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    background: white;
+    border-bottom: 1px solid #e5e7eb;
+    flex-shrink: 0;
+    z-index: 100;
+}
+
+.header-left, .header-right {
+    width: 40px;
+    display: flex;
+    justify-content: center;
+}
+
+.app-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #000;
+    margin: 0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.icon-btn {
+    min-width: 32px;
+    height: 32px;
+    border: none;
+    background: white;
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 0 12px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    color: #374151;
+}
+
+.icon-btn:hover {
+    background: #f3f4f6;
+}
+
+/* Day Cards Container */
+.day-cards-container {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-bottom: 100px; /* Space for sticky management buttons + bottom nav */
+}
+
+/* Day Card Styles */
+.day-card {
+    background: var(--color-white);
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    position: relative;
+    overflow: hidden;
+}
+
+.day-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.day-card.clickable {
+    cursor: pointer;
+}
+
+/* Card Color Classes */
+.day-card.color-0 { background: var(--color-black); }
+.day-card.color-1 { background: var(--color-orange); }
+.day-card.color-2 { background: var(--color-blue); }
+.day-card.color-3 { background: var(--color-white); }
+.day-card.color-4 { background: var(--color-yellow); }
+.day-card.color-5 { background: var(--color-pink); }
+
+/* Text color based on background */
+.day-card.color-0 .card-text,
+.day-card.color-2 .card-text {
+    color: var(--text-light);
+}
+
+.day-card.color-1 .card-text,
+.day-card.color-3 .card-text,
+.day-card.color-4 .card-text,
+.day-card.color-5 .card-text {
+    color: var(--text-dark);
+}
+
+/* Card Content Layout */
+.card-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+}
+
+.card-info {
+    flex: 1;
+}
+
+.card-day {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.card-date {
+    font-size: 14px;
+    font-weight: 400;
+    margin-bottom: 12px;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.card-count {
+    font-size: 96px;
+    font-weight: 900;
+    margin-bottom: 4px;
+    line-height: 0.9;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.card-label {
+    font-size: 14px;
+    font-weight: 400;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.card-play {
+    width: 40px;
+    height: 40px;
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    margin-top: 8px;
+}
+
+.day-card.color-0 .card-play,
+.day-card.color-2 .card-play {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* Bottom Navigation - Fixed at bottom of viewport */
+.bottom-nav {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: white;
+    border-top: 1px solid #e5e7eb;
+    display: flex;
+    justify-content: space-around;
+    padding: 8px 0;
+    z-index: 100;
+    flex-shrink: 0;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.nav-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 4px 12px;
+    border-radius: 8px;
+    transition: background-color 0.2s;
+    flex: 1;
+    max-width: 120px;
+}
+
+.nav-item:hover {
+    background: #f3f4f6;
+}
+
+.nav-item.active {
+    background: #f3f4f6;
+}
+
+.nav-icon {
+    font-size: 20px;
+    margin-bottom: 2px;
+    line-height: 1;
+}
+
+.nav-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: #374151;
+    line-height: 1.2;
+}
+
+.nav-item.active .nav-label {
+    color: #1f2937;
+    font-weight: 600;
+}
+
+/* Mobile Summary Container - Scrollable content area */
+.mobile-summary {
+    background: transparent;
+    padding: 0;
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 60px; /* Space for bottom nav */
+}
+
+.mobile-summary .management-buttons {
+    position: sticky;
+    bottom: 0;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: white;
+    border-top: 1px solid #e5e7eb;
+    z-index: 10;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
+    margin-top: auto;
+}
+
+/* Responsive adjustments */
+@media (max-width: 480px) {
+    .day-cards-container {
+        padding: 0 16px; /* remove top padding on mobile too */
+    }
+    
+    .day-card {
+        padding: 16px;
+    }
+    
+    .card-count {
+        font-size: 80px;
+        font-weight: 900;
+        line-height: 0.9;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    
+    .mobile-header {
+        padding: 12px 16px;
+    }
+    
+    .app-title {
+        font-size: 16px;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
 }

@@ -262,10 +262,13 @@ class YAMNetProcessor:
                 prediction.probability >= self.config.threshold):
                 
                 # Create audio clip around the laughter event
+                # CRITICAL: Pass class_id to ensure unique filenames for same timestamp but different classes
+                # (e.g., Laughter class_id=13 and Giggle class_id=15 at same timestamp need different filenames)
                 clip_path = await self._create_audio_clip(
                     audio_data,
                     sample_rate,
                     prediction.timestamp,
+                    prediction.class_id,  # Include class_id for unique filenames
                     original_file_path
                 )
                 
@@ -294,6 +297,7 @@ class YAMNetProcessor:
         audio_data: np.ndarray,
         sample_rate: int,
         timestamp: float,
+        class_id: int,
         original_file_path: str
     ) -> Optional[str]:
         """
@@ -303,6 +307,7 @@ class YAMNetProcessor:
             audio_data: Audio data array
             sample_rate: Sample rate
             timestamp: Laughter timestamp in seconds
+            class_id: YAMNet class ID for this detection (ensures unique filenames)
             original_file_path: Original file path for naming
             
         Returns:
@@ -323,9 +328,18 @@ class YAMNetProcessor:
             # Extract clip
             clip_data = audio_data[start_sample:end_sample]
             
-            # Create temporary file for clip
+            # Create filename with class_id to ensure uniqueness
+            # CRITICAL FIX: Include class_id in filename to prevent collisions when multiple
+            # laughter types are detected at the same timestamp (e.g., Laughter class_id=13
+            # and Giggle class_id=15). Without this, int(timestamp) causes filename collisions.
+            # Format: {base_name}_laughter_{timestamp_str}_{class_id}.wav
+            # Example: 20251024_130000-20251024_150000_laughter_2708-64_13.wav
             base_name = os.path.splitext(os.path.basename(original_file_path))[0]
-            clip_filename = f"{base_name}_laughter_{int(timestamp)}.wav"
+            # Use timestamp with 2 decimal places (YAMNet patch_duration=0.48s, so .2f is sufficient)
+            # Replace decimal point with hyphen to avoid filesystem issues
+            timestamp_str = f"{timestamp:.2f}".replace(".", "-")
+            # Include class_id as suffix to ensure uniqueness
+            clip_filename = f"{base_name}_laughter_{timestamp_str}_{class_id}.wav"
             clip_path = os.path.join(settings.upload_dir, "clips", clip_filename)
             
             # Ensure directory exists

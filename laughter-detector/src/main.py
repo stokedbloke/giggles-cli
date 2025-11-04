@@ -6,7 +6,6 @@ middleware, and startup/shutdown events.
 """
 
 import os
-import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -19,13 +18,6 @@ from .config.settings import settings
 from .api.routes import router
 from .services.scheduler import scheduler
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,7 +28,7 @@ async def lifespan(app: FastAPI):
         app: FastAPI application instance
     """
     # Startup
-    logger.info("Starting laughter detector application")
+    print("Starting laughter detector application")
     
     # Create necessary directories
     os.makedirs(settings.upload_dir, exist_ok=True)
@@ -47,17 +39,17 @@ async def lifespan(app: FastAPI):
     # Temporarily disabled to fix page loading issue
     # await scheduler.start()
     
-    logger.info("Application startup complete")
+    print("Application startup complete")
     
     yield
     
     # Shutdown
-    logger.info("Shutting down laughter detector application")
+    print("Shutting down laughter detector application")
     
     # Stop the scheduler
     await scheduler.stop()
     
-    logger.info("Application shutdown complete")
+    print("Application shutdown complete")
 
 
 # Create FastAPI application
@@ -242,7 +234,7 @@ async def not_found_handler(request: Request, exc):
 @app.exception_handler(500)
 async def internal_error_handler(request: Request, exc):
     """Handle 500 errors with a custom response."""
-    logger.error(f"Internal server error: {str(exc)}")
+    print(f"❌ Internal server error: {str(exc)}")
     return HTMLResponse(
         content="""
         <!DOCTYPE html>

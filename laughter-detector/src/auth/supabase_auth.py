@@ -6,7 +6,6 @@ using Supabase Auth with proper security practices.
 """
 
 import re
-import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from supabase import create_client, Client
@@ -17,7 +16,6 @@ from jose import JWTError, jwt
 from ..config.settings import settings
 
 # Configure logging
-logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -288,13 +286,13 @@ class AuthService:
                 user_id = unverified_payload.get("sub")
                 
                 if not user_id:
-                    logger.error("No user_id found in JWT token")
+                    print(f"No user_id found in JWT token")
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Invalid token: missing user_id"
                     )
             except Exception as e:
-                logger.error(f"Failed to extract user_id from JWT: {str(e)}")
+                print(f"Failed to extract user_id from JWT: {str(e)}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid token format"
@@ -313,7 +311,7 @@ class AuthService:
             result = temp_client.table("users").select("*").eq("id", user_id).single().execute()
             
             if not result.data:
-                logger.error(f"User {user_id} not found in database")
+                print(f"User {user_id} not found in database")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="User not found"
@@ -323,7 +321,7 @@ class AuthService:
             
             # Verify that the JWT user_id matches the database user_id
             if user_data.get('id') != user_id:
-                logger.error(f"User ID mismatch: JWT user_id={user_id}, DB user_id={user_data.get('id')}")
+                print(f"User ID mismatch: JWT user_id={user_id}, DB user_id={user_data.get('id')}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Authentication error"
@@ -340,9 +338,9 @@ class AuthService:
             # Re-raise HTTPExceptions as-is
             raise
         except Exception as e:
-            logger.error(f"❌ get_current_user error: {type(e).__name__}: {str(e)}")
+            print(f"❌ get_current_user error: {type(e).__name__}: {str(e)}")
             import traceback
-            logger.error(traceback.format_exc())
+            print(traceback.format_exc())
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials"

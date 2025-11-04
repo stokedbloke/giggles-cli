@@ -12,14 +12,12 @@ import tempfile
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from fastapi import HTTPException, status
-import logging
 import pytz
 
 from ..config.settings import settings
 from ..auth.encryption import encryption_service
 from ..models.audio import AudioSegment, AudioSegmentCreate
 
-logger = logging.getLogger(__name__)
 
 
 class LimitlessAPIService:
@@ -98,7 +96,7 @@ class LimitlessAPIService:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error retrieving audio segments: {str(e)}")
+            print(f"❌ Error retrieving audio segments: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to retrieve audio segments"
@@ -138,6 +136,14 @@ class LimitlessAPIService:
                 "endMs": int(end_date.timestamp() * 1000)
             }
             
+            # Track API call start time and get enhanced logger
+            # FIX: Added API call tracking to populate audio_files_downloaded stat
+            # Previously limitless_api never called add_api_call, causing stats to be 0
+            import time
+            api_call_start = time.time()
+            from .enhanced_logger import get_current_logger
+            enhanced_logger = get_current_logger()  # May be None if not in processing context
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.base_url}/v1/download-audio",
@@ -145,6 +151,9 @@ class LimitlessAPIService:
                     params=params,
                     timeout=aiohttp.ClientTimeout(total=300)  # 5 minute timeout
                 ) as response:
+                    # Calculate API call duration and record it
+                    api_call_duration = int((time.time() - api_call_start) * 1000)  # milliseconds
+                    
                     if response.status == 401:
                         raise HTTPException(
                             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -155,8 +164,48 @@ class LimitlessAPIService:
                             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                             detail="Limitless API rate limit exceeded"
                         )
+                    elif response.status == 404:
+                        # No audio data for this time range - skip this chunk
+                        # This is expected when Limitless has no audio for that window, not an error
+                        print(f"⚠️ No audio data available for time range: {start_iso} to {end_iso}")
+                        # Record the 404 API call for tracking (counts as failed_api_call in stats)
+                        if enhanced_logger:
+                            enhanced_logger.add_api_call(
+                                endpoint="download-audio",
+                                status_code=404,
+                                duration_ms=api_call_duration,
+                                response_size_bytes=0,
+                                params={"startMs": params["startMs"], "endMs": params["endMs"]},
+                                error="No audio data available"
+                            )
+                        return []
+                    elif response.status in [502, 503, 504]:
+                        # Gateway errors - log and skip this chunk (MVP behavior)
+                        # These indicate transient Limitless API issues, not application errors
+                        print(f"⚠️ Limitless API returned {response.status} for {start_iso} to {end_iso} - skipping this chunk")
+                        # Record the gateway error for audit trail
+                        if enhanced_logger:
+                            enhanced_logger.add_api_call(
+                                endpoint="download-audio",
+                                status_code=response.status,
+                                duration_ms=api_call_duration,
+                                response_size_bytes=0,
+                                params={"startMs": params["startMs"], "endMs": params["endMs"]},
+                                error=f"Gateway error: {response.status}"
+                            )
+                        return []
                     elif response.status != 200:
-                        logger.error(f"Limitless API returned status {response.status}")
+                        print(f"❌ Limitless API returned status {response.status}")
+                        # Record the error
+                        if enhanced_logger:
+                            enhanced_logger.add_api_call(
+                                endpoint="download-audio",
+                                status_code=response.status,
+                                duration_ms=api_call_duration,
+                                response_size_bytes=0,
+                                params={"startMs": params["startMs"], "endMs": params["endMs"]},
+                                error=f"Unexpected error: {response.status}"
+                            )
                         raise HTTPException(
                             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Failed to fetch audio segments from Limitless API"
@@ -165,10 +214,25 @@ class LimitlessAPIService:
                     # The response should be binary audio data (.ogg file)
                     audio_data = await response.read()
                     
+                    # Record successful API call (for debugging) and increment counter
+                    if enhanced_logger:
+                        enhanced_logger.add_api_call(
+                            endpoint="download-audio",
+                            status_code=200,
+                            duration_ms=api_call_duration,
+                            response_size_bytes=len(audio_data) if audio_data else 0,  # OGG file size
+                            params={"startMs": params["startMs"], "endMs": params["endMs"]}
+                        )
+                        # Increment audio files downloaded counter
+                        if audio_data:  # Only count if we actually got data
+                            enhanced_logger.increment_audio_files()
+                    
                     # Generate filename for the audio file
                     start_ms = int(start_date.timestamp() * 1000)
                     end_ms = int(end_date.timestamp() * 1000)
                     filename = f"{start_date.strftime('%Y%m%d_%H%M%S')}-{end_date.strftime('%Y%m%d_%H%M%S')}.ogg"
+                    
+                    print(f"  ✅ : {len(audio_data)} bytes for {start_date.strftime('%H:%M')} to {end_date.strftime('%H:%M')}")
                     
                     # Store the audio file
                     audio_file_path = await self._store_audio_file(audio_data, user_id, filename)
@@ -184,13 +248,13 @@ class LimitlessAPIService:
                             'file_path': audio_file_path
                         })
                     
-                    logger.info(f"Retrieved {len(segments)} audio segments from Limitless API")
+                    print(f"  📁 Stored OGG: {filename}")
                     return segments
                     
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error fetching audio segments from Limitless API: {str(e)}")
+            print(f"❌ Error fetching audio segments from Limitless API: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to retrieve audio segments"
@@ -277,20 +341,20 @@ class LimitlessAPIService:
                     if response.status == 200:
                         return True
                     elif response.status == 401:
-                        logger.warning("Invalid Limitless API key provided")
+                        print(f"⚠️ Invalid Limitless API key provided")
                         return False
                     elif response.status == 403:
-                        logger.warning("Limitless API key access forbidden")
+                        print(f"⚠️ Limitless API key access forbidden")
                         return False
                     else:
-                        logger.warning(f"Unexpected response from Limitless API: {response.status}")
+                        print(f"⚠️ Unexpected response from Limitless API: {response.status}")
                         return False
                     
         except aiohttp.ClientError as e:
-            logger.error(f"Network error validating Limitless API key: {str(e)}")
+            print(f"❌ Network error validating Limitless API key: {str(e)}")
             return False
         except Exception as e:
-            logger.error(f"Unexpected error validating Limitless API key: {str(e)}")
+            print(f"❌ Unexpected error validating Limitless API key: {str(e)}")
             return False
     
     async def get_processing_status(self, api_key: str) -> Dict[str, Any]:
@@ -321,7 +385,7 @@ class LimitlessAPIService:
                         return {"status": "unknown", "message": "Unable to get status"}
                         
         except Exception as e:
-            logger.error(f"Error getting processing status: {str(e)}")
+            print(f"❌ Error getting processing status: {str(e)}")
             return {"status": "error", "message": str(e)}
     
     async def _store_audio_file(self, audio_data: bytes, user_id: str, filename: str) -> Optional[str]:
@@ -348,11 +412,10 @@ class LimitlessAPIService:
             with open(local_path, 'wb') as f:
                 f.write(audio_data)
             
-            logger.info(f"Stored audio file: {local_path}")
             return local_path
             
         except Exception as e:
-            logger.error(f"Error storing audio file: {str(e)}")
+            print(f"❌ Error storing audio file: {str(e)}")
             return None
 
     async def _download_audio_file(self, file_url: str, user_id: str, segment_id: str) -> Optional[str]:
@@ -384,14 +447,14 @@ class LimitlessAPIService:
                             async for chunk in response.content.iter_chunked(8192):
                                 f.write(chunk)
                         
-                        logger.info(f"Downloaded audio file: {local_path}")
+                        print(f"Downloaded audio file: {local_path}")
                         return local_path
                     else:
-                        logger.error(f"Failed to download audio file: HTTP {response.status}")
+                        print(f"❌ Failed to download audio file: HTTP {response.status}")
                         return None
                         
         except Exception as e:
-            logger.error(f"Error downloading audio file: {str(e)}")
+            print(f"❌ Error downloading audio file: {str(e)}")
             return None
 
 

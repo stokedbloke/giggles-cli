@@ -7,7 +7,6 @@ This module handles Limitless API key storage, validation, and management.
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import logging
 
 from ..auth.supabase_auth import auth_service
 from ..auth.encryption import encryption_service
@@ -18,7 +17,6 @@ from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter()
@@ -56,7 +54,7 @@ async def check_limitless_key_status(
         Simple boolean indicating if API key exists
     """
     try:
-        logger.info(f"🔑 Checking API key status for user: {user.get('user_id')}")
+        print(f"🔑 Checking API key status for user: {user.get('user_id')}")
         
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
@@ -64,14 +62,14 @@ async def check_limitless_key_status(
         # Check if user has an active API key (RLS will ensure user can only access their own)
         result = supabase.table("limitless_keys").select("id").eq("is_active", True).execute()
         
-        logger.info(f"🔑 Found {len(result.data)} active API keys")
+        print(f"🔑 Found {len(result.data)} active API keys")
         
         return {"has_key": len(result.data) > 0}
         
     except Exception as e:
-        logger.error(f"❌ Error checking API key status: {str(e)}")
+        print(f"❌ Error checking API key status: {str(e)}")
         import traceback
-        logger.error(traceback.format_exc())
+        print(f"❌ {traceback.format_exc()}")
         return {"has_key": False}
 
 
@@ -136,7 +134,7 @@ async def store_limitless_key(
         # Re-raise HTTP exceptions with their original status and detail
         raise e
     except Exception as e:
-        logger.error(f"Database error storing API key: {str(e)}")
+        print(f"❌ Database error storing API key: {str(e)}")
         
         # Check if it's a constraint violation (unique index)
         if "duplicate key value violates unique constraint" in str(e) or "idx_limitless_keys_one_active_per_user" in str(e):
@@ -180,12 +178,12 @@ async def delete_limitless_key(
             # No keys found to delete
             return {"message": "No API key found to delete"}
         
-        logger.info(f"Deleted {len(result.data)} API key(s) for user {user['user_id']}")
+        print(f"Deleted {len(result.data)} API key(s) for user {user['user_id']}")
         
         return {"message": "API key deleted successfully"}
         
     except Exception as e:
-        logger.error(f"Error deleting API key: {str(e)}")
+        print(f"❌ Error deleting API key: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete API key"
