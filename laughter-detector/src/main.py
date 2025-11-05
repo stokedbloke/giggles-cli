@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
         app: FastAPI application instance
     """
     # Startup
-    print("Starting laughter detector application")
+    print("Starting Giggle Gauge")
     
     # Create necessary directories
     os.makedirs(settings.upload_dir, exist_ok=True)
@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    print("Shutting down laughter detector application")
+    print("Shutting down Giggle Gauge")
     
     # Stop the scheduler
     await scheduler.stop()
@@ -196,7 +196,7 @@ async def not_found_handler(request: Request, exc):
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Page Not Found - Laughter Detector</title>
+            <title>Page Not Found - Giggle Gauge</title>
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
                 body { 
@@ -240,7 +240,7 @@ async def internal_error_handler(request: Request, exc):
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Server Error - Laughter Detector</title>
+            <title>Server Error - LGiggle Gauge</title>
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
                 body { 

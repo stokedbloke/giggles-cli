@@ -25,16 +25,18 @@ CREATE TABLE IF NOT EXISTS public.limitless_keys (
 );
 
 -- Create audio_segments table
+-- TIMEZONE NOTE: The 'date' field is a calendar date interpreted in the user's timezone
+-- The start_time and end_time fields are UTC timestamps
 CREATE TABLE IF NOT EXISTS public.audio_segments (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
-    date DATE NOT NULL,
-    start_time TIMESTAMPTZ NOT NULL,
-    end_time TIMESTAMPTZ NOT NULL,
+    date DATE NOT NULL, -- Calendar date in user's timezone (see TIMEZONE NOTE above)
+    start_time TIMESTAMPTZ NOT NULL, -- UTC timestamp
+    end_time TIMESTAMPTZ NOT NULL, -- UTC timestamp
     file_path TEXT NOT NULL, -- Encrypted file path
     processed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(), -- UTC timestamp
+    updated_at TIMESTAMPTZ DEFAULT NOW() -- UTC timestamp
 );
 
 -- Create laughter_detections table
@@ -51,17 +53,20 @@ CREATE TABLE IF NOT EXISTS public.laughter_detections (
 );
 
 -- Create processing_logs table for tracking
+-- TIMEZONE NOTE: The 'date' field is a calendar date interpreted in the user's timezone
+-- For example, processing "Nov 3 PST" (which spans Nov 3 08:00 UTC to Nov 4 08:00 UTC) 
+-- will have date = '2025-11-03' (Nov 3 in user's timezone)
 CREATE TABLE IF NOT EXISTS public.processing_logs (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     user_id UUID REFERENCES public.users(id) ON DELETE CASCADE NOT NULL,
-    date DATE NOT NULL,
+    date DATE NOT NULL, -- Calendar date in user's timezone (see TIMEZONE NOTE above)
     status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
     message TEXT,
     processed_segments INTEGER DEFAULT 0,
     total_segments INTEGER DEFAULT 0,
-    last_processed TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    last_processed TIMESTAMPTZ, -- UTC timestamp
+    created_at TIMESTAMPTZ DEFAULT NOW(), -- UTC timestamp
+    updated_at TIMESTAMPTZ DEFAULT NOW() -- UTC timestamp
 );
 
 -- Create indexes for better performance

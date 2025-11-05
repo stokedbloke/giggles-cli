@@ -195,7 +195,11 @@ class EnhancedProcessingLogger:
             print(f"❌ Error saving processing log: {str(e)}")
     
     def log_processing_summary(self):
-        """Log a summary of the processing session."""
+        """Log a summary of the processing session.
+        
+        NOTE: These counts reflect what was newly processed in THIS session, not total counts for the date.
+        If segments were already fully processed, they are skipped and won't be counted here.
+        """
         stats = self.get_summary_stats()
         
         print("\n" + "=" * 60)
@@ -204,10 +208,14 @@ class EnhancedProcessingLogger:
         print(f"👤 User ID: {self.user_id[:8]}")
         print(f"🔧 Trigger: {self.trigger_type}")
         print(f"⏱️  Duration: {stats['processing_duration_seconds']} seconds")
-        print(f"📁 Audio Files Downloaded: {stats['audio_files_downloaded']} (OGG files from Limitless API)")
-        print(f"🎭 Laughter Events Found: {stats['laughter_events_found']} (detected by YAMNet)")
+        print(f"📁 Audio Files Downloaded: {stats['audio_files_downloaded']} (newly downloaded OGG files from Limitless API)")
+        print(f"🎭 Laughter Events Found: {stats['laughter_events_found']} (newly detected by YAMNet in this session)")
         if stats.get('duplicates_skipped', 0) > 0:
             print(f"⏭️  Duplicates Skipped: {stats['duplicates_skipped']} laughter events (time-window: {stats.get('skipped_time_window', 0)}, clip-path: {stats.get('skipped_clip_path', 0)}, missing-file: {stats.get('skipped_missing_file', 0)})")
+        
+        # Note when all segments were skipped (already processed)
+        if stats['audio_files_downloaded'] == 0 and stats['laughter_events_found'] == 0:
+            print(f"ℹ️  All segments were already fully processed - no new files downloaded or laughter detected in this run")
         
         if self.error_details:
             print(f"❌ Errors: {len(self.error_details)}")

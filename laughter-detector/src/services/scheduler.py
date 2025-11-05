@@ -114,12 +114,29 @@ class Scheduler:
             print(f"❌ Daily audio processing failed: {str(e)}")
     
     async def _process_user_audio(self, user: dict):
-        """Process audio for a specific user with enhanced logging."""
+        """
+        Process audio for a specific user with enhanced logging.
+        
+        This is the main entry point for processing a user's audio. It handles:
+        - Incremental processing (resumes from last processed timestamp)
+        - Timezone-aware date range calculation
+        - 2-hour chunk processing
+        - Enhanced logging for database tracking
+        
+        Args:
+            user: User dictionary with user_id, email, and timezone fields
+            
+        Called by:
+            - "Update Today's Count" button (via current_day_routes.py)
+            - Manual reprocessing (via manual_reprocess_yesterday.py)
+            - Future: Scheduled daily processing (if scheduler.start() is enabled)
+        """
         user_id = user["user_id"]
         trigger_type = getattr(self, '_trigger_type', 'manual')  # Default to manual for backward compatibility
         
         # Initialize enhanced logger - for scheduled/Update Today processing, always use today's date
         # For reprocessing, process_date is set by caller (manual_reprocess_yesterday)
+        # The enhanced logger tracks API calls, laughter events, duplicates, and saves to processing_logs table
         from .enhanced_logger import get_enhanced_logger
         from datetime import date
         enhanced_logger = get_enhanced_logger(user_id, trigger_type, process_date=date.today())
@@ -218,12 +235,41 @@ class Scheduler:
             enhanced_logger.log_processing_summary()
     
     async def _process_date_range(self, user_id: str, api_key: str, start_time: datetime, end_time: datetime) -> int:
-        """Process audio for a specific date range with enhanced logging.
+        """
+        Process audio for a specific date range with enhanced logging.
         
+        This method orchestrates the processing of a single 2-hour chunk:
+        1. Pre-download check (prevents wasteful OGG downloads)
+        2. Download OGG file from Limitless API
+        3. Store segment metadata in database
+        4. Process audio with YAMNet (detect laughter)
+        5. Store laughter detections (with duplicate prevention)
+        6. Mark segment as processed
+        7. Delete OGG file after processing
+        
+        Args:
+            user_id: User ID for tracking and folder structure
+            api_key: Decrypted Limitless API key
+            start_time: Start of time range (UTC, timezone-aware)
+            end_time: End of time range (UTC, timezone-aware)
+            
         Returns:
             Number of NEW segments processed and stored (excludes duplicates)
+            
+        Called by:
+            - _process_user_audio() - for incremental daily processing
+            - process_nightly_audio.py - for cron job processing
+            - manual_reprocess_yesterday.py - for reprocessing date ranges
         """
         try:
+            # OPTIMIZATION: Check if this time range is already fully processed BEFORE downloading
+            # This prevents wasteful OGG file downloads for already-processed segments
+            # CRITICAL FIX: Uses SERVICE_ROLE_KEY to bypass RLS (needed for cron context without user JWT)
+            # Overlap detection: Two time ranges overlap if (segment_start < our_end) AND (segment_end > our_start)
+            if await self._is_time_range_processed(user_id, start_time, end_time):
+                print(f"⏭️  SKIPPED (already fully processed): Time range {start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')} UTC - Already processed, skipping download")
+                return 0
+            
             # Get audio segments from Limitless API
             segments = await limitless_api_service.get_audio_segments(
                 api_key, start_time, end_time, user_id
@@ -259,6 +305,9 @@ class Scheduler:
             
         except Exception as e:
             print(f"❌ Error processing date range: {str(e)}")
+            # Get current logger if available (may be None if not in processing context)
+            from .enhanced_logger import get_current_logger
+            enhanced_logger = get_current_logger()
             if enhanced_logger:
                 enhanced_logger.add_error("date_range_error", str(e), 
                     context={"start_time": start_time.isoformat(), "end_time": end_time.isoformat()})
@@ -466,16 +515,53 @@ class Scheduler:
             return start_of_day
     
     async def _is_time_range_processed(self, user_id: str, start_time: datetime, end_time: datetime) -> bool:
-        """Check if time range has already been processed for user."""
+        """Check if time range has already been processed for user.
+        
+        Uses overlap detection: Two time ranges overlap if:
+        (segment_start < our_end) AND (segment_end > our_start)
+        
+        FIX: Uses SERVICE_ROLE_KEY to bypass RLS (needed for cron context without user JWT)
+        """
         try:
-            from ..auth.supabase_auth import auth_service
+            import os
+            from dotenv import load_dotenv
+            from supabase import create_client
+            import pytz
             
-            result = auth_service.supabase.table("audio_segments").select("id").eq("user_id", user_id).eq("processed", True).gte("start_time", start_time.isoformat()).lte("end_time", end_time.isoformat()).execute()
+            # Ensure timezone-aware
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=pytz.UTC)
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=pytz.UTC)
             
-            return len(result.data) > 0 if result.data else False
+            # Load environment variables
+            load_dotenv()
+            
+            # Use service role key (bypasses RLS - needed for cron context without user JWT)
+            # Consistent with _get_latest_processed_timestamp() pattern
+            SUPABASE_URL = os.getenv('SUPABASE_URL')
+            SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+            
+            if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+                print(f"❌ Supabase credentials not found in _is_time_range_processed")
+                return False
+            
+            supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            
+            # Check for any processed segments that overlap with this time range
+            # Overlap condition: segment_start < our_end AND segment_end > our_start
+            result = supabase.table("audio_segments").select("id").eq("user_id", user_id).eq("processed", True).lt("start_time", end_time.isoformat()).gt("end_time", start_time.isoformat()).execute()
+            
+            found_count = len(result.data) if result.data else 0
+            if found_count > 0:
+                print(f"🔍 Pre-download check: Found {found_count} processed segment(s) overlapping {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')} UTC")
+            
+            return found_count > 0
             
         except Exception as e:
             print(f"❌ Error checking if time range processed: {str(e)}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
             return False
     
     async def _mark_time_range_processed(self, user_id: str, start_time: datetime, end_time: datetime):
@@ -492,7 +578,32 @@ class Scheduler:
             print(f"❌ Error marking time range as processed: {str(e)}")
     
     async def _store_laughter_detections(self, user_id: str, segment_id: str, laughter_events: list):
-        """Store laughter detection results in database with duplicate prevention."""
+        """
+        Store laughter detection results in database with duplicate prevention.
+        
+        This method implements THREE layers of duplicate detection:
+        1. TIME-WINDOW DUPLICATE: Same class_id within 5 seconds (catches YAMNet's overlapping detection windows)
+        2. CLIP-PATH DUPLICATE: Exact same filename already exists (catches reprocessing same file)
+        3. DATABASE CONSTRAINT: Unique constraint on (user_id, timestamp, class_id) - final safety net
+        
+        IMPORTANT: Different class_ids at the same timestamp are NOT duplicates (e.g., Laughter class_id=13 
+        and Giggle class_id=15 at same timestamp are unique detections). This is enforced by the database 
+        constraint unique_laughter_timestamp_user_class which includes class_id.
+        
+        Args:
+            user_id: User ID for database insertion
+            segment_id: Audio segment ID that these detections belong to
+            laughter_events: List of LaughterEvent objects from YAMNet processing
+            
+        Database Operations:
+            - Queries laughter_detections table for duplicate checks
+            - Inserts new laughter_detections rows
+            - Increments enhanced_logger skip counters for duplicates
+            - Deletes duplicate WAV files immediately after detection
+            
+        Returns:
+            None (prints summary statistics)
+        """
         try:
             import os
             from dotenv import load_dotenv
@@ -582,15 +693,24 @@ class Scheduler:
                             enhanced_logger.increment_skipped_time_window()
                         ts_str = event_datetime.astimezone(pytz.timezone('America/Los_Angeles')).strftime('%H:%M:%S')
                         print(f"⏭️  SKIPPED (duplicate within 5s): {ts_str} prob={event.probability:.3f} - Already exists at {matching_class_detections[0]['timestamp']} (class_id={event_class_id})")
-                        # DISABLED: Duplicate clip deletion - investigating missing clips bug
-                        # try:
-                        #     if getattr(event, 'clip_path', None):
-                        #         import os
-                        #         if os.path.exists(event.clip_path):
-                        #             os.remove(event.clip_path)
-                        #             print(f"🧹 Deleted duplicate clip (time-window): {os.path.basename(event.clip_path)}")
-                        # except Exception as cleanup_err:
-                        #     print(f"⚠️ ⚠️ Failed to delete duplicate clip: {str(cleanup_err)}")
+                        # Delete duplicate clip file immediately (before it gets stored in DB)
+                        try:
+                            if getattr(event, 'clip_path', None):
+                                import os
+                                # Resolve path - handle both relative and absolute paths
+                                clip_path = event.clip_path
+                                if not os.path.isabs(clip_path):
+                                    # Relative path - resolve from project root
+                                    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                                    clip_path = os.path.join(project_root, clip_path)
+                                
+                                if os.path.exists(clip_path):
+                                    os.remove(clip_path)
+                                    print(f"🧹 Deleted duplicate clip (time-window): {os.path.basename(event.clip_path)}")
+                                else:
+                                    print(f"⚠️ Duplicate clip file not found at: {clip_path}")
+                        except Exception as cleanup_err:
+                            print(f"⚠️ Failed to delete duplicate clip: {str(cleanup_err)}")
                         continue  # Skip this duplicate
                 
                 # DUPLICATE PREVENTION: Check for existing clip path
@@ -603,19 +723,35 @@ class Scheduler:
                             enhanced_logger.increment_skipped_clip_path()
                         ts_str = event_datetime.astimezone(pytz.timezone('America/Los_Angeles')).strftime('%H:%M:%S')
                         print(f"⏭️  SKIPPED (duplicate clip path): {ts_str} prob={event.probability:.3f} - Clip already exists: {os.path.basename(event.clip_path)}")
-                        # DISABLED: Duplicate clip deletion - investigating missing clips bug
-                        # try:
-                        #     import os
-                        #     if os.path.exists(event.clip_path):
-                        #         os.remove(event.clip_path)
-                        #         print(f"🧹 Deleted duplicate clip (path): {os.path.basename(event.clip_path)}")
-                        # except Exception as cleanup_err:
-                        #     print(f"⚠️ ⚠️ Failed to delete duplicate clip by path: {str(cleanup_err)}")
+                        # Delete duplicate clip file immediately (before it gets stored in DB)
+                        try:
+                            import os
+                            # Resolve path - handle both relative and absolute paths
+                            clip_path = event.clip_path
+                            if not os.path.isabs(clip_path):
+                                # Relative path - resolve from project root
+                                project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                                clip_path = os.path.join(project_root, clip_path)
+                            
+                            if os.path.exists(clip_path):
+                                os.remove(clip_path)
+                                print(f"🧹 Deleted duplicate clip (path): {os.path.basename(event.clip_path)}")
+                            else:
+                                print(f"⚠️ Duplicate clip file not found at: {clip_path}")
+                        except Exception as cleanup_err:
+                            print(f"⚠️ Failed to delete duplicate clip by path: {str(cleanup_err)}")
                         continue  # Skip this duplicate
                 
                 # Store the laughter detection (no duplicates found)
                 # Only store if clip file actually exists (prevent 404s)
-                clip_exists = os.path.exists(event.clip_path) if event.clip_path else False
+                clip_exists = False
+                if event.clip_path:
+                    clip_path = event.clip_path
+                    if not os.path.isabs(clip_path):
+                        # Relative path - resolve from project root
+                        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                        clip_path = os.path.join(project_root, clip_path)
+                    clip_exists = os.path.exists(clip_path)
                 if not clip_exists:
                     skipped_missing_file += 1
                     enhanced_logger = get_current_logger()
@@ -656,14 +792,24 @@ class Scheduler:
                         skipped_time_window += 1
                         ts_str = event_datetime.astimezone(pytz.timezone('America/Los_Angeles')).strftime('%H:%M:%S')
                         print(f"⏭️  SKIPPED (database constraint): {ts_str} prob={event.probability:.3f} - Unique constraint violation (same user_id, timestamp, AND class_id already exists)")
-                        # TEMPORARILY DISABLED: Duplicate clip deletion to debug
-                        # try:
-                        #     import os
-                        #     if getattr(event, 'clip_path', None) and os.path.exists(event.clip_path):
-                        #         os.remove(event.clip_path)
-                        #         print(f"🧹 Deleted clip after constraint duplicate: {os.path.basename(event.clip_path)}")
-                        # except Exception as cleanup_err:
-                        #     print(f"⚠️ ⚠️ Failed to delete clip after duplicate constraint: {str(cleanup_err)}")
+                        # Delete duplicate clip file immediately (database constraint caught it)
+                        try:
+                            import os
+                            if getattr(event, 'clip_path', None):
+                                # Resolve path - handle both relative and absolute paths
+                                clip_path = event.clip_path
+                                if not os.path.isabs(clip_path):
+                                    # Relative path - resolve from project root
+                                    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                                    clip_path = os.path.join(project_root, clip_path)
+                                
+                                if os.path.exists(clip_path):
+                                    os.remove(clip_path)
+                                    print(f"🧹 Deleted clip after constraint duplicate: {os.path.basename(event.clip_path)}")
+                                else:
+                                    print(f"⚠️ Duplicate clip file not found at: {clip_path}")
+                        except Exception as cleanup_err:
+                            print(f"⚠️ Failed to delete clip after duplicate constraint: {str(cleanup_err)}")
                     else:
                         print(f"❌ Error inserting laughter detection: {str(insert_error)}")
             
@@ -782,7 +928,30 @@ class Scheduler:
             print(f"❌ ❌ Error deleting audio file: {str(e)}")
 
     async def _cleanup_orphaned_files(self, user_id: str, start_time: datetime, end_time: datetime):
-        """Clean up orphaned audio files from previous runs that should have been deleted."""
+        """
+        Clean up orphaned audio files from previous runs that should have been deleted.
+        
+        This method performs two-pass cleanup:
+        1. Check database-referenced files: Delete OGG files from audio_segments table that still exist on disk
+           (these should have been deleted after processing, but may remain if processing failed)
+        2. Scan disk for unreferenced files: Find OGG/WAV files on disk that have no database records
+        
+        File Locations Scanned:
+        - OGG files: uploads/audio/{user_id}/*.ogg
+        - WAV clips (legacy): uploads/clips/*.wav
+        - WAV clips (current): uploads/clips/{user_id}/*.wav
+        
+        Args:
+            user_id: User ID for user-specific folder scanning
+            start_time: Start of time window (currently unused, scans all files)
+            end_time: End of time window (currently unused, scans all files)
+            
+        Called by:
+            - _process_user_audio() - once after all chunks are processed
+            - Future: Could be called by scheduled cleanup job
+            
+        Note: This runs silently - only prints messages when files are found and deleted
+        """
         try:
             import os
             from dotenv import load_dotenv
@@ -865,25 +1034,41 @@ class Scheduler:
                             await self._delete_audio_file(file_path, user_id)
                             disk_files_cleaned += 1
             
-            # TEMPORARILY DISABLED: WAV clip deletion to debug missing file bug
-            # clips_dir = os.path.join(project_root, "uploads", "clips")
-            # if os.path.exists(clips_dir):
-            #     for filename in os.listdir(clips_dir):
-            #         if filename.endswith('.wav'):
-            #             file_path = os.path.join(clips_dir, filename)
-            #             if filename.lower() not in all_clip_paths:
-            #                 # WAV file exists on disk but not referenced in laughter_detections - true orphan
-            #                 print(f"⚠️ 🗑️ CLEANUP: Found orphaned WAV clip (no DB record): {filename}")
-            #                 await self._delete_audio_file(file_path, user_id)
-            #                 disk_files_cleaned += 1
-            #                 print(f"⚠️ 🗑️ CLEANUP: Deleted orphaned WAV clip: {filename}")
-            #             else:
-            #                 print(f"✅ CLEANUP: WAV clip is referenced in DB: {filename}")
+            # Clean up orphaned WAV clips
+            # Clips can be in two locations:
+            # 1. Legacy: uploads/clips/*.wav (old format)
+            # 2. Current: uploads/clips/{user_id}/*.wav (per-user folders)
+            clips_dir = os.path.join(project_root, "uploads", "clips")
+            if os.path.exists(clips_dir):
+                # Check legacy location (direct in clips/)
+                for filename in os.listdir(clips_dir):
+                    if filename.endswith('.wav') and os.path.isfile(os.path.join(clips_dir, filename)):
+                        file_path = os.path.join(clips_dir, filename)
+                        if filename.lower() not in all_clip_paths:
+                            # WAV file exists on disk but not referenced in laughter_detections - true orphan
+                            print(f"⚠️ 🗑️ CLEANUP: Deleting orphaned WAV clip (legacy location): {filename}")
+                            await self._delete_audio_file(file_path, user_id)
+                            disk_files_cleaned += 1
+                
+                # Check per-user folder location
+                user_clips_dir = os.path.join(clips_dir, user_id)
+                if os.path.exists(user_clips_dir):
+                    for filename in os.listdir(user_clips_dir):
+                        if filename.endswith('.wav'):
+                            file_path = os.path.join(user_clips_dir, filename)
+                            if filename.lower() not in all_clip_paths:
+                                # WAV file exists on disk but not referenced in laughter_detections - true orphan
+                                print(f"⚠️ 🗑️ CLEANUP: Deleting orphaned WAV clip (user folder): {filename}")
+                                await self._delete_audio_file(file_path, user_id)
+                                disk_files_cleaned += 1
             
             total_cleaned = db_files_cleaned + disk_files_cleaned
             
             if total_cleaned > 0:
-                print(f"🧹 CLEANUP: Deleted {total_cleaned} orphaned OGG file(s)")
+                print(f"🧹 CLEANUP: Deleted {total_cleaned} orphaned file(s)")
+            
+        except Exception as e:
+            print(f"❌ Error in orphan cleanup: {str(e)}")
             # Silent success if no orphans found - don't clutter logs
                 
         except Exception as e:

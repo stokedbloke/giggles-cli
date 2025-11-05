@@ -147,12 +147,26 @@ async def get_laughter_detections(
     """
     Get laughter detections for a specific date.
     
+    This endpoint retrieves all laughter detections for a given date, interpreted in the
+    user's timezone. The date string is parsed as midnight in the user's timezone, then
+    converted to UTC for database queries (since all timestamps are stored in UTC).
+    
+    TIMEZONE FIX: Previously, date boundaries were calculated in UTC, causing dates to shift
+    by timezone offset (e.g., clicking "Friday" showed Thursday's data for PST users).
+    The fix ensures the UI shows the correct day's data regardless of user's timezone.
+    
     Args:
         date: Date in YYYY-MM-DD format (interpreted in user's timezone)
-        user: Current authenticated user (contains timezone field)
+        user: Current authenticated user (contains timezone field from database)
+        credentials: JWT token for RLS authentication
         
     Returns:
-        List of laughter detection events
+        List of LaughterDetectionResponse objects, sorted chronologically by timestamp
+        
+    Database Query:
+        - Selects from laughter_detections table with timestamp filter (UTC range)
+        - RLS (Row Level Security) ensures user can only access their own data
+        - ORDER BY timestamp ensures chronological sorting for UI display
         
     Raises:
         HTTPException: If retrieval fails or date format is invalid
