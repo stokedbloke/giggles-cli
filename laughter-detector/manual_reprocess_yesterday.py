@@ -41,8 +41,14 @@ logger = logging.getLogger(__name__)
 
 
 async def clear_database_records(user_id: str, start_time: datetime, end_time: datetime, supabase):
-    """Clear database records for the date range."""
+    """
+    Clear database records for the date range.
+    
+    NOTE: This should be called AFTER clear_disk_files() to ensure file paths
+    are retrieved from database before records are deleted.
+    """
     logger.info("🗑️  Clearing database records...")
+    print("🗑️  Clearing database records...")
     
     # Delete laughter detections first (due to foreign key constraints)
     laughter_result = supabase.table("laughter_detections").select("id").eq("user_id", user_id).gte("timestamp", start_time.isoformat()).lte("timestamp", end_time.isoformat()).execute()
@@ -54,11 +60,23 @@ async def clear_database_records(user_id: str, start_time: datetime, end_time: d
         for laughter_id in laughter_ids:
             supabase.table("laughter_detections").delete().eq("id", laughter_id).execute()
         logger.info(f"  ✅ Deleted {laughter_count} laughter detections")
+        print(f"  ✅ Deleted {laughter_count} laughter detections")
     else:
         logger.info("  ℹ️  No laughter detections to delete")
+        print("  ℹ️  No laughter detections to delete")
     
     # Delete audio segments
-    segments_result = supabase.table("audio_segments").select("id, file_path").eq("user_id", user_id).gte("start_time", start_time.isoformat()).lte("end_time", end_time.isoformat()).execute()
+    # FIX: Use .lt() instead of .lte() for end_time to avoid edge cases
+    # Also check both start_time and end_time overlap with cleanup range
+    # A segment should be deleted if:
+    # - Its start_time is within the cleanup range, OR
+    # - Its end_time is within the cleanup range, OR  
+    # - It spans the entire cleanup range
+    # Using: (start_time >= cleanup_start AND start_time < cleanup_end) OR
+    #        (end_time > cleanup_start AND end_time <= cleanup_end) OR
+    #        (start_time < cleanup_start AND end_time > cleanup_end)
+    # Simplified to: segments where (start_time < cleanup_end) AND (end_time > cleanup_start)
+    segments_result = supabase.table("audio_segments").select("id, file_path, start_time, end_time").eq("user_id", user_id).lt("start_time", end_time.isoformat()).gt("end_time", start_time.isoformat()).execute()
     segments_count = len(segments_result.data) if segments_result.data else 0
     
     if segments_count > 0:
@@ -66,8 +84,10 @@ async def clear_database_records(user_id: str, start_time: datetime, end_time: d
         for segment_id in segment_ids:
             supabase.table("audio_segments").delete().eq("id", segment_id).execute()
         logger.info(f"  ✅ Deleted {segments_count} audio segments")
+        print(f"  ✅ Deleted {segments_count} audio segments")
     else:
         logger.info("  ℹ️  No audio segments to delete")
+        print("  ℹ️  No audio segments to delete")
     
     # Delete processing logs for the date range
     # Processing logs use date field, so we need to check dates in the range
@@ -90,81 +110,128 @@ async def clear_database_records(user_id: str, start_time: datetime, end_time: d
         logger.info("  ℹ️  No processing logs to delete")
     
     logger.info("✅ Database cleanup complete\n")
+    print("✅ Database cleanup complete\n")
 
 
-async def clear_disk_files(user_id: str, start_time: datetime, end_time: datetime):
-    """Clear disk files (ogg and wav) for the date range."""
+async def clear_disk_files(user_id: str, start_time: datetime, end_time: datetime, supabase=None):
+    """
+    Clear disk files (ogg and wav) for the date range.
+    
+    FIXED: Now uses database paths instead of scanning directories.
+    Handles user-specific folder structure: clips/{user_id}/ and audio/{user_id}/
+    
+    Args:
+        user_id: User ID to delete files for
+        start_time: Start of date range (timezone-aware datetime)
+        end_time: End of date range (timezone-aware datetime)
+        supabase: Supabase client (optional, will create if not provided)
+    """
     logger.info("🗑️  Clearing disk files...")
+    print("🗑️  Clearing disk files...")
     
-    from src.config.settings import settings
+    import os  # Needed for os.path.exists, os.remove, os.path.basename
     
-    # Get base upload directory
-    upload_dir = Path(settings.upload_dir)
-    audio_dir = upload_dir / "audio" / user_id
-    clips_dir = upload_dir / "clips"
+    # Create supabase client if not provided
+    if supabase is None:
+        from dotenv import load_dotenv
+        from supabase import create_client
+        
+        load_dotenv()
+        SUPABASE_URL = os.getenv('SUPABASE_URL')
+        SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+        
+        if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+            logger.error("❌ Supabase credentials not found")
+            return
+        
+        supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
     
     files_deleted = {"ogg": 0, "wav": 0}
     
-    # Delete OGG files from audio directory
-    if audio_dir.exists():
-        # Get all OGG files in the user's directory
-        ogg_files = list(audio_dir.glob("*.ogg"))
-        for ogg_file in ogg_files:
-            try:
-                # Check if file modification time is within the date range
-                file_mtime = datetime.fromtimestamp(ogg_file.stat().st_mtime)
-                # Use a timezone-aware comparison if the file time is naive
-                if file_mtime.tzinfo is None:
-                    file_mtime = pytz.UTC.localize(file_mtime)
-                
-                # Compare in UTC for consistency
-                start_utc = start_time.astimezone(pytz.UTC)
-                end_utc = end_time.astimezone(pytz.UTC)
-                file_utc = file_mtime.astimezone(pytz.UTC)
-                
-                if start_utc <= file_utc <= end_utc:
-                    ogg_file.unlink()
-                    files_deleted["ogg"] += 1
-            except Exception as e:
-                logger.warning(f"  ⚠️  Failed to delete {ogg_file.name}: {str(e)}")
-        
-        if files_deleted["ogg"] > 0:
-            logger.info(f"  ✅ Deleted {files_deleted['ogg']} OGG files")
-        else:
-            logger.info("  ℹ️  No OGG files to delete")
-    else:
-        logger.info("  ℹ️  Audio directory does not exist")
+    # CRITICAL: Get file paths from database BEFORE deleting records
+    # This ensures we know exactly which files to delete, even if they're in user-specific folders
     
-    # Delete WAV clip files
-    # Since we deleted laughter_detections, we should delete all clips that might be in the range
-    # We'll delete clips that were created during the date range based on filename patterns
-    if clips_dir.exists():
-        wav_files = list(clips_dir.glob("*.wav"))
-        for wav_file in wav_files:
-            try:
-                # Check file modification time
-                file_mtime = datetime.fromtimestamp(wav_file.stat().st_mtime)
-                if file_mtime.tzinfo is None:
-                    file_mtime = pytz.UTC.localize(file_mtime)
-                
-                start_utc = start_time.astimezone(pytz.UTC)
-                end_utc = end_time.astimezone(pytz.UTC)
-                file_utc = file_mtime.astimezone(pytz.UTC)
-                
-                if start_utc <= file_utc <= end_utc:
-                    wav_file.unlink()
+    # 1. Get clip_paths from laughter_detections table
+    detections_result = supabase.table("laughter_detections").select(
+        "clip_path"
+    ).eq("user_id", user_id).gte("timestamp", start_time.isoformat()).lte(
+        "timestamp", end_time.isoformat()
+    ).execute()
+    
+    clip_paths = []
+    if detections_result.data:
+        clip_paths = [d['clip_path'] for d in detections_result.data if d.get('clip_path')]
+        logger.info(f"  📋 Found {len(clip_paths)} clip paths in database")
+    
+    # 2. Get file_paths from audio_segments table
+    segments_result = supabase.table("audio_segments").select(
+        "file_path"
+    ).eq("user_id", user_id).gte("start_time", start_time.isoformat()).lte(
+        "end_time", end_time.isoformat()
+    ).execute()
+    
+    audio_paths = []
+    if segments_result.data:
+        audio_paths = [s['file_path'] for s in segments_result.data if s.get('file_path')]
+        logger.info(f"  📋 Found {len(audio_paths)} audio file paths in database")
+    
+    # 3. Delete WAV clip files using database paths
+    # Resolve relative paths to absolute
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    for clip_path in clip_paths:
+        if clip_path:
+            # Resolve relative paths to absolute
+            if not os.path.isabs(clip_path):
+                clip_path = os.path.join(project_root, clip_path)
+            
+            if os.path.exists(clip_path):
+                try:
+                    os.remove(clip_path)
                     files_deleted["wav"] += 1
-            except Exception as e:
-                logger.warning(f"  ⚠️  Failed to delete {wav_file.name}: {str(e)}")
-        
-        if files_deleted["wav"] > 0:
-            logger.info(f"  ✅ Deleted {files_deleted['wav']} WAV clip files")
-        else:
-            logger.info("  ℹ️  No WAV clip files to delete")
+                    print(f"  🗑️  Deleted WAV clip: {os.path.basename(clip_path)}")
+                except Exception as e:
+                    logger.warning(f"  ⚠️  Failed to delete clip {os.path.basename(clip_path)}: {str(e)}")
+                    print(f"  ⚠️  Failed to delete clip {os.path.basename(clip_path)}: {str(e)}")
+            else:
+                logger.debug(f"  ℹ️  Clip file not found (may already be deleted): {clip_path}")
+                print(f"  ℹ️  Clip file not found: {clip_path}")
+    
+    if files_deleted["wav"] > 0:
+        logger.info(f"  ✅ Deleted {files_deleted['wav']} WAV clip files")
+        print(f"  ✅ Deleted {files_deleted['wav']} WAV clip files")
     else:
-        logger.info("  ℹ️  Clips directory does not exist")
+        logger.info("  ℹ️  No WAV clip files to delete")
+        print("  ℹ️  No WAV clip files to delete")
+    
+    # 4. Delete OGG audio files using database paths
+    # Resolve relative paths to absolute
+    for audio_path in audio_paths:
+        if audio_path:
+            # Resolve relative paths to absolute
+            if not os.path.isabs(audio_path):
+                audio_path = os.path.join(project_root, audio_path)
+            
+            if os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                    files_deleted["ogg"] += 1
+                    print(f"  🗑️  Deleted OGG file: {os.path.basename(audio_path)}")
+                except Exception as e:
+                    logger.warning(f"  ⚠️  Failed to delete audio {os.path.basename(audio_path)}: {str(e)}")
+                    print(f"  ⚠️  Failed to delete audio {os.path.basename(audio_path)}: {str(e)}")
+            else:
+                logger.debug(f"  ℹ️  Audio file not found (may already be deleted): {audio_path}")
+                print(f"  ℹ️  Audio file not found: {audio_path}")
+    
+    if files_deleted["ogg"] > 0:
+        logger.info(f"  ✅ Deleted {files_deleted['ogg']} OGG files")
+        print(f"  ✅ Deleted {files_deleted['ogg']} OGG files")
+    else:
+        logger.info("  ℹ️  No OGG files to delete")
+        print("  ℹ️  No OGG files to delete")
     
     logger.info("✅ Disk cleanup complete\n")
+    print("✅ Disk cleanup complete\n")
 
 
 async def reprocess_date_range(start_date_str: str, end_date_str: str, user_id: str = None):
@@ -223,11 +290,11 @@ async def reprocess_date_range(start_date_str: str, end_date_str: str, user_id: 
     logger.info(f"   To: {end_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     logger.info(f"   User ID: {user_id[:8]}...\n")
     
-    # Step 1: Clear database records
-    await clear_database_records(user_id, start_time, end_time, supabase)
+    # Step 1: Clear disk files FIRST (reads paths from database before deleting records)
+    await clear_disk_files(user_id, start_time, end_time, supabase)
     
-    # Step 2: Clear disk files
-    await clear_disk_files(user_id, start_time, end_time)
+    # Step 2: Clear database records (after files are deleted)
+    await clear_database_records(user_id, start_time, end_time, supabase)
     
     # Step 3: Get API key
     keys_result = supabase.table('limitless_keys').select('encrypted_api_key').eq('user_id', user_id).eq('is_active', True).limit(1).execute()

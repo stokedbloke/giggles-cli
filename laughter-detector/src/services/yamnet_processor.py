@@ -113,12 +113,13 @@ class YAMNetProcessor:
             logger.info("🧠 Running YAMNet inference...")
             predictions = await self._run_inference(audio_data, sample_rate)
             
-            # Filter for laughter events
+                        # Filter for laughter events
             laughter_events = await self._filter_laughter_events(
                 predictions, 
                 audio_data, 
-                sample_rate,
-                audio_file_path
+                sample_rate, 
+                audio_file_path,
+                user_id  # Pass user_id for user-specific folder structure
             )
             
             logger.info(f"Found {len(laughter_events)} laughter events in {audio_file_path}")
@@ -195,12 +196,25 @@ class YAMNetProcessor:
         """
         Run YAMNet model inference (synchronous).
         
+        YAMNet processes audio in patches of 0.48 seconds (patch_duration). Each patch
+        produces probability scores for 521 audio classes. We filter for laughter-related
+        classes (class_ids: 13, 14, 15, 17, 18) that exceed the threshold.
+        
+        Laughter Classes:
+            - 13: Laughter
+            - 14: Baby laughter
+            - 15: Giggle
+            - 17: Belly laugh
+            - 18: Chuckle
+        
         Args:
-            audio_data: Audio data array
-            sample_rate: Sample rate of audio
+            audio_data: Audio data array (mono, 16kHz sample rate)
+            sample_rate: Sample rate (must be 16000 Hz for YAMNet)
             
         Returns:
-            List of YAMNet predictions
+            List of YAMNetPrediction objects with timestamp, probability, class_id, class_name
+            
+        Note: This runs synchronously in a thread pool executor to avoid blocking the event loop
         """
         try:
             if self.model is None:
@@ -240,7 +254,8 @@ class YAMNetProcessor:
         predictions: List[YAMNetPrediction],
         audio_data: np.ndarray,
         sample_rate: int,
-        original_file_path: str
+        original_file_path: str,
+        user_id: str
     ) -> List[LaughterEvent]:
         """
         Filter predictions for laughter events and create audio clips.
@@ -250,6 +265,7 @@ class YAMNetProcessor:
             audio_data: Original audio data
             sample_rate: Sample rate
             original_file_path: Path to original audio file
+            user_id: User ID for user-specific folder structure
             
         Returns:
             List of laughter events with audio clips
@@ -269,7 +285,8 @@ class YAMNetProcessor:
                     sample_rate,
                     prediction.timestamp,
                     prediction.class_id,  # Include class_id for unique filenames
-                    original_file_path
+                    original_file_path,
+                    user_id  # Pass user_id for user-specific folder structure
                 )
                 
                 if clip_path:
@@ -298,20 +315,39 @@ class YAMNetProcessor:
         sample_rate: int,
         timestamp: float,
         class_id: int,
-        original_file_path: str
+        original_file_path: str,
+        user_id: str
     ) -> Optional[str]:
         """
         Create audio clip around laughter timestamp.
         
+        This method extracts a 4-second clip (2 seconds before + 2 seconds after) around the
+        detected laughter timestamp. The filename includes the class_id to ensure uniqueness
+        when multiple laughter types are detected at the same timestamp.
+        
+        Filename Format:
+            {base_name}_laughter_{timestamp_str}_{class_id}.wav
+            Example: 20251024_130000-20251024_150000_laughter_2708-64_13.wav
+            - base_name: Original OGG filename (without .ogg extension)
+            - timestamp_str: Timestamp in seconds, formatted as "2708-64" (replaces . with -)
+            - class_id: YAMNet class ID (13=Laughter, 15=Giggle, etc.)
+        
+        File Location:
+            uploads/clips/{user_id}/filename.wav (user-specific folder structure)
+        
         Args:
-            audio_data: Audio data array
-            sample_rate: Sample rate
-            timestamp: Laughter timestamp in seconds
+            audio_data: Full audio data array from OGG file
+            sample_rate: Sample rate (16000 Hz for YAMNet)
+            timestamp: Laughter timestamp in seconds (relative to audio start)
             class_id: YAMNet class ID for this detection (ensures unique filenames)
-            original_file_path: Original file path for naming
+            original_file_path: Original OGG file path (used for base filename)
+            user_id: User ID for folder structure
             
         Returns:
-            Path to created clip file, or None if failed
+            Path to created clip file (relative to project root), or None if failed
+            
+        Called by:
+            - _filter_laughter_events() - for each detected laughter event
         """
         try:
             # Calculate clip boundaries
@@ -340,7 +376,11 @@ class YAMNetProcessor:
             timestamp_str = f"{timestamp:.2f}".replace(".", "-")
             # Include class_id as suffix to ensure uniqueness
             clip_filename = f"{base_name}_laughter_{timestamp_str}_{class_id}.wav"
-            clip_path = os.path.join(settings.upload_dir, "clips", clip_filename)
+            
+            # FOLDER STRUCTURE: Store clips in user-specific folders (consistent with audio files)
+            # This ensures clips are organized per-user for easier cleanup and management
+            # Format: uploads/clips/{user_id}/filename.wav (matches uploads/audio/{user_id}/filename.ogg)
+            clip_path = os.path.join(settings.upload_dir, "clips", user_id, clip_filename)
             
             # Ensure directory exists
             os.makedirs(os.path.dirname(clip_path), exist_ok=True)

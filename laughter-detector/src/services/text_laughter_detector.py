@@ -28,7 +28,7 @@ class TextLaughterDetector:
         # Compile regex patterns for efficiency
         self.compiled_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.laughter_patterns]
         
-        print(f"Text laughter detector initialized with {len(self.laughter_patterns)} patterns")
+        print(f"Text Giggle Gauge initialized with {len(self.laughter_patterns)} patterns")
     
     async def detect_laughter_in_text(self, text_content: str, segment_id: str) -> List[Dict[str, Any]]:
         """

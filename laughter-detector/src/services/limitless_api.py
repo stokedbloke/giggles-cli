@@ -112,13 +112,37 @@ class LimitlessAPIService:
         """
         Fetch audio segments from Limitless API.
         
+        This method downloads OGG audio files from the Limitless API for a specific time range.
+        The API returns binary audio data which is saved to disk in user-specific folders.
+        
+        API Endpoint:
+            GET /v1/download-audio
+            Query params: startMs, endMs (milliseconds since epoch)
+            Headers: X-API-Key (API key)
+        
+        Response Handling:
+            - 200: Success - binary OGG file data
+            - 404: No audio data available (expected for time ranges with no audio)
+            - 401: Invalid API key
+            - 429: Rate limit exceeded
+            - 502/503/504: Gateway errors (skipped, logged)
+        
+        File Storage:
+            - Location: uploads/audio/{user_id}/{timestamp_start}-{timestamp_end}.ogg
+            - Filename format: YYYYMMDD_HHMMSS-YYYYMMDD_HHMMSS.ogg
+        
         Args:
-            api_key: Limitless API key
-            start_date: Start date
-            end_date: End date
+            api_key: Limitless API key (decrypted)
+            start_date: Start date/time (UTC, timezone-aware)
+            end_date: End date/time (UTC, timezone-aware)
+            user_id: User ID for folder structure and enhanced logger tracking
             
         Returns:
-            List of segment data dictionaries
+            List of segment data dictionaries with date, start_time, end_time, file_path
+            
+        Database Operations:
+            - Increments enhanced_logger.audio_files_downloaded counter
+            - Logs API call details (endpoint, status, duration, response size)
         """
         try:
             headers = {
