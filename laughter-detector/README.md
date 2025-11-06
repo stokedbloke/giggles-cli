@@ -2,6 +2,10 @@
 
 A secure web application that processes audio from Limitless AI pendant to detect and count laughter using YAMNet, with encrypted storage and mobile-responsive UI.
 
+## 📊 Complete User Flow
+
+For a comprehensive visual diagram of the entire application flow (authentication, processing, UI interactions), see [User Flow Diagram](./docs/USER_FLOW_DIAGRAM.md).
+
 ## Features
 
 - 🔐 **Secure Authentication**: Email/password authentication with MFA via Supabase

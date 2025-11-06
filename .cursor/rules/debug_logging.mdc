@@ -1,0 +1,52 @@
+# Debug Logging Rules
+
+## CRITICAL: Never Use logger.info() for Debug Output
+- **ALWAYS use `print()` for debug output that needs to be visible in server logs**
+- `logger.info()` is often filtered out by uvicorn log levels
+- Only use `logger.error()` or `logger.warning()` for actual errors/warnings that should be in logs
+- **For all debug/trace information that the user needs to see, use `print()`**
+
+## When Adding Logging
+- Before adding any logging statement, ask: "Does the user need to see this in the console?"
+- If YES → Use `print()`
+- If NO (only for production logs) → Use `logger.error()` or `logger.warning()`
+- **NEVER use `logger.info()` for user-visible debug output**
+
+## Preventing Overwriting Changes
+- **Be explicit about your assumptions and intentions in chat before making changes**
+- **If you're modifying code that was recently changed, clearly state what you're changing and why**
+- Don't blame the user for issues caused by overwriting your own previous fixes
+- If you notice a collision issue, check if you previously fixed it and then broke it again
+
+## CRITICAL: Check Documentation Before Making Assumptions
+- **Before guessing or assuming how an external library/tool works, CHECK THE DOCUMENTATION**
+- **What I CAN do:**
+  - Search the codebase for existing usage/patterns
+  - Read code comments and docstrings
+  - Look at example code in the repository
+  - Analyze the actual code that uses the library
+- **What I CANNOT do:**
+  - Access external websites or documentation directly
+  - Run web searches to look up official docs
+  - Access online resources outside the codebase
+- **If working with external APIs, models, or libraries (e.g., YAMNet, TensorFlow, Supabase):**
+  - First search the codebase for existing usage patterns
+  - Read any comments/README files that explain behavior
+  - Look at constants/variables that define parameters (e.g., `patch_duration = 0.48`)
+  - If unclear, explicitly state assumptions in chat before implementing
+- **DO NOT make assumptions about precision, timing, data formats, or behavior without checking available code/comments**
+
+## Preventing Overengineering
+- **Don't add features unless explicitly requested**
+- If the user asks "why does X happen?", fix X, don't add Y
+- If debugging something, add minimal logging to solve the problem, not a comprehensive system
+- **Before adding any new abstraction, class, or system, ask: "Is this necessary or am I overengineering?"**
+
+## Code Review Checklist Before Submitting Changes
+1. ✅ Did I use `print()` for any debug output that needs to be visible?
+2. ✅ Did I check documentation for external libraries/tools instead of guessing?
+3. ✅ Did I check if my changes overwrite any user modifications?
+4. ✅ Am I adding features that weren't requested?
+5. ✅ Is my solution the simplest one that works?
+alwaysApply: true
+---
