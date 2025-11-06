@@ -1,0 +1,38 @@
+[Unit]
+Description=Giggle Gauge FastAPI Application
+After=network.target
+
+[Service]
+Type=simple
+User=giggles
+Group=giggles
+WorkingDirectory=/var/lib/giggles/laughter-detector
+Environment="PATH=/var/lib/giggles/venv/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=/var/lib/giggles/.env
+
+# Start command
+ExecStart=/var/lib/giggles/venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000 --workers 2
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/giggles/uploads /var/lib/giggles/logs
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=giggles
+
+[Install]
+WantedBy=multi-user.target
+
