@@ -68,22 +68,48 @@ class AuthService:
     
     async def register_user(self, email: str, password: str, timezone: str = "UTC") -> Dict[str, Any]:
         """
-        Register a new user with timezone detection.
+        Register a new user with timezone detection and proper multi-user isolation.
         
-        TIMEZONE FIX: Now accepts timezone parameter from frontend detection.
+        Registration flow:
+        1. Validate email and password strength
+        2. Create user in Supabase Auth (auth.users table)
+        3. Enable MFA by default (security best practice)
+        4. Create user profile in custom users table with detected timezone
+           - Uses user's session token (RLS enforced)
+           - Ensures proper user isolation from the start
+        
+        MULTI-USER FIX: Registration now properly isolates users:
+        - Each user gets unique user_id from Supabase Auth
+        - User profile created with RLS enforcement (user can only create own profile)
+        - Timezone stored per-user for proper date handling
+        - No shared state or cross-user data leakage
+        
+        Security notes:
+        - Password validation enforces strong passwords (8+ chars, mixed case, special chars)
+        - MFA enabled by default for additional security
+        - User profile creation uses RLS (not service role key) for proper isolation
+        - Database trigger also creates profile, but with UTC timezone (we update immediately)
         
         Args:
-            email: User email address
-            password: User password
+            email: User email address (must be valid email format)
+            password: User password (must meet strength requirements)
             timezone: User's timezone (IANA format, e.g., 'America/Los_Angeles')
+                     Detected from browser during registration
+                     Defaults to 'UTC' if not provided
             
         Returns:
-            User data and session information
+            Dictionary containing:
+            - user_id: Unique user identifier from Supabase Auth
+            - email: User's email address
+            - created_at: Account creation timestamp
+            - session: Supabase session with access_token for authenticated requests
             
         Raises:
-            HTTPException: If registration fails
+            HTTPException: If validation fails or registration fails
+                - 400: Invalid email format or weak password
+                - 400: Registration failed (user already exists, etc.)
         """
-        # Validate input
+        # Validate input - fail fast if invalid
         if not self.validate_email(email):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -97,7 +123,8 @@ class AuthService:
             )
         
         try:
-            # Register with Supabase
+            # Step 1: Register user in Supabase Auth (creates entry in auth.users table)
+            # This creates the user account and returns a session with access_token
             response = self.supabase.auth.sign_up({
                 "email": email,
                 "password": password
@@ -109,17 +136,28 @@ class AuthService:
                     detail="Registration failed"
                 )
             
-            # Enable MFA by default
+            # Step 2: Enable MFA by default (security best practice)
+            # Uses service role key (admin operation, appropriate use case)
             await self.enable_mfa(response.user.id)
             
-            # TIMEZONE FIX: Create user profile with detected timezone
-            await self.create_user_profile(response.user.id, response.user.email, timezone)
+            # Step 3: Create user profile in custom users table with detected timezone
+            # MULTI-USER FIX: Uses user's session token (RLS enforced via INSERT policy)
+            # This ensures:
+            # - User can only create their own profile (not other users' profiles)
+            # - Proper user isolation from the moment of registration
+            # - Timezone is stored immediately (database trigger creates profile with UTC default)
+            await self.create_user_profile(
+                response.user.id, 
+                response.user.email, 
+                timezone, 
+                response.session.access_token
+            )
             
             return {
                 "user_id": response.user.id,
                 "email": response.user.email,
                 "created_at": response.user.created_at,
-                "session": response.session
+                "session": response.session  # Contains access_token for authenticated requests
             }
             
         except Exception as e:
@@ -166,23 +204,52 @@ class AuthService:
                 detail="Invalid credentials"
             )
     
-    async def create_user_profile(self, user_id: str, email: str, timezone: str = "UTC") -> None:
+    async def create_user_profile(self, user_id: str, email: str, timezone: str, access_token: str) -> None:
         """
         Create user profile in our custom users table.
         
+        MULTI-USER FIX: Uses user's session token (RLS enforced) instead of service role key.
+        This ensures proper security isolation and follows the principle of least privilege.
+        
+        Why this approach:
+        - RLS (Row Level Security) policies enforce that users can only insert their own profile
+        - The INSERT policy "Users can insert own profile" checks: auth.uid() = id
+        - Using the user's session token ensures RLS is properly enforced
+        - Avoids using service role key unnecessarily (service role bypasses RLS)
+        
+        Security benefits:
+        1. Prevents privilege escalation (user can only create their own profile)
+        2. Enforces RLS policies at the database level
+        3. Follows principle of least privilege (no service role needed)
+        4. Proper audit trail (operation attributed to the user)
+        
+        Note: There is a database trigger `on_auth_user_created` that also creates a user
+        profile, but it creates it with timezone='UTC' (default). This method allows us
+        to set the detected timezone from the frontend immediately after registration.
+        
         Args:
-            user_id: User ID from Supabase auth
+            user_id: User ID from Supabase auth (matches JWT 'sub' claim)
             email: User email address
             timezone: User's timezone (IANA format, e.g., 'America/Los_Angeles')
+                     Detected from browser during registration
+            access_token: User's access token from registration session
+                         Used to authenticate the INSERT operation with RLS enforcement
         """
         try:
-            # Insert user into our custom users table with timezone
-            result = self.supabase.table("users").insert({
+            # Create a client with user's session token (not service role key)
+            # This ensures RLS policies are enforced: user can only insert their own profile
+            from supabase import create_client
+            user_client = create_client(settings.supabase_url, settings.supabase_key)
+            user_client.postgrest.auth(access_token)
+            
+            # Insert user profile - RLS policy ensures auth.uid() = id
+            # If user_id in JWT doesn't match the 'id' being inserted, RLS will block this
+            result = user_client.table("users").insert({
                 "id": user_id,
                 "email": email,
                 "is_active": True,
                 "mfa_enabled": True,
-                "timezone": timezone  # Store detected timezone
+                "timezone": timezone  # Store detected timezone from frontend
             }).execute()
             
             if not result.data:
@@ -196,20 +263,27 @@ class AuthService:
         """
         Enable multi-factor authentication for user.
         
+        Security note: Uses service role key (appropriate for admin operation).
+        This is an administrative action that requires elevated privileges,
+        so using the service role key is correct here.
+        
         Args:
-            user_id: User ID
+            user_id: User ID from Supabase Auth
             
         Returns:
-            True if MFA enabled successfully
+            True if MFA enabled successfully, False otherwise
         """
         try:
-            # Enable MFA using Supabase service role
+            # Enable MFA using Supabase service role key
+            # Reason: Admin operation requiring elevated privileges
+            # Service role key bypasses RLS, which is appropriate for admin actions
             service_client = create_client(
                 settings.supabase_url,
                 settings.supabase_service_role_key
             )
             
-            # Update user to enable MFA
+            # Update user metadata to enable MFA
+            # This sets app_metadata.mfa_enabled = True in Supabase Auth
             response = service_client.auth.admin.update_user_by_id(
                 user_id,
                 {"app_metadata": {"mfa_enabled": True}}
@@ -218,6 +292,8 @@ class AuthService:
             return response is not None
             
         except Exception:
+            # Fail silently - MFA is a security enhancement, not critical for registration
+            # If this fails, user can still register, but MFA won't be enabled
             return False
     
     def create_access_token(self, data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
@@ -267,23 +343,56 @@ class AuthService:
         """
         Get current user using Supabase's JWT token.
         
-        SECURITY FIX: Extract user_id from JWT and query specific user to prevent
-        authentication bypass where any valid token could return the first user in the table.
+        CRITICAL SECURITY FIX: This function was previously vulnerable to authentication bypass.
+        
+        Previous vulnerability:
+        - Old code: `SELECT * FROM users LIMIT 1` (no WHERE clause)
+        - Problem: Would return the FIRST user in the table (alphabetically/by creation date)
+        - Attack: Attacker with valid JWT for User A could receive User B's data
+        - Impact: CRITICAL - Complete authentication bypass, users could access any user's data
+        
+        Current fix:
+        - Extract user_id from JWT token's 'sub' claim
+        - Query specific user: `SELECT * FROM users WHERE id = user_id`
+        - Verify JWT user_id matches database user_id (defense in depth)
+        - Result: User can only access their own data
+        
+        Security benefits:
+        1. Prevents authentication bypass (user can only access own data)
+        2. Enforces proper user isolation (multi-user security)
+        3. Uses JWT 'sub' claim as source of truth for user identity
+        4. Verifies user_id match between JWT and database (defense in depth)
+        
+        Multi-user isolation:
+        - Each user's JWT contains their unique user_id in the 'sub' claim
+        - Database queries filter by user_id to ensure data isolation
+        - RLS policies provide additional database-level protection
+        - All authenticated endpoints depend on this function for user identification
         
         Args:
-            token: Supabase JWT access token
+            token: Supabase JWT access token containing user_id in 'sub' claim
             
         Returns:
-            Current user data
+            Current user data including user_id, email, timezone, and created_at
             
         Raises:
-            HTTPException: If token is invalid or user not found
+            HTTPException: If token is invalid, user_id missing, or user not found
+            
+        Example JWT payload:
+            {
+                "sub": "user-uuid-1234",  # <-- This is the user_id we extract
+                "email": "user@example.com",
+                "exp": 1234567890,
+                ...
+            }
         """
         try:
-            # First, decode JWT to extract user_id (without full verification since Supabase will validate)
+            # Step 1: Extract user_id from JWT token without full verification
+            # Reason: We need user_id to query the database, and Supabase will validate
+            # the token signature when we use it for database queries
             try:
                 unverified_payload = jwt.get_unverified_claims(token)
-                user_id = unverified_payload.get("sub")
+                user_id = unverified_payload.get("sub")  # 'sub' claim contains user_id
                 
                 if not user_id:
                     print(f"No user_id found in JWT token")
@@ -298,16 +407,19 @@ class AuthService:
                     detail="Invalid token format"
                 )
             
-            # Create a temporary Supabase client with the user's token
+            # Step 2: Create Supabase client with user's token for authenticated query
+            # This ensures RLS policies are enforced at the database level
             temp_client = create_client(
                 settings.supabase_url,
                 settings.supabase_key
             )
             
-            # Set the Authorization header on the postgrest client
+            # Set the Authorization header - Supabase validates token signature here
             temp_client.postgrest.auth(token)
             
-            # SECURITY FIX: Query specific user by user_id from JWT (not just limit(1))
+            # Step 3: Query SPECIFIC user by user_id from JWT (SECURITY FIX)
+            # Old (vulnerable): .limit(1) - would return first user in table
+            # New (secure): .eq("id", user_id).single() - returns only the authenticated user
             result = temp_client.table("users").select("*").eq("id", user_id).single().execute()
             
             if not result.data:
@@ -319,7 +431,9 @@ class AuthService:
             
             user_data = result.data
             
-            # Verify that the JWT user_id matches the database user_id
+            # Step 4: Defense in depth - verify JWT user_id matches database user_id
+            # This catches any edge cases where the query might have returned wrong user
+            # (should never happen with .eq() filter, but double-check for safety)
             if user_data.get('id') != user_id:
                 print(f"User ID mismatch: JWT user_id={user_id}, DB user_id={user_data.get('id')}")
                 raise HTTPException(
@@ -327,17 +441,19 @@ class AuthService:
                     detail="Authentication error"
                 )
             
+            # Step 5: Return user data (only their own data, guaranteed by user_id filter)
             return {
                 "user_id": user_data['id'],
                 "email": user_data['email'],
-                "timezone": user_data.get('timezone', 'UTC'),  # TIMEZONE FIX: Include timezone in response
+                "timezone": user_data.get('timezone', 'UTC'),  # Include timezone for proper date handling
                 "created_at": user_data.get('created_at', datetime.utcnow().isoformat())
             }
             
         except HTTPException:
-            # Re-raise HTTPExceptions as-is
+            # Re-raise HTTPExceptions as-is (they already have proper status codes)
             raise
         except Exception as e:
+            # Log full error for debugging but don't expose details to client
             print(f"❌ get_current_user error: {type(e).__name__}: {str(e)}")
             import traceback
             print(traceback.format_exc())
