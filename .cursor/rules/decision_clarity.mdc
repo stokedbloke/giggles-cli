@@ -1,0 +1,50 @@
+# Decision Clarity Rules
+
+## When Providing Multiple Options
+
+1. **State recommendation clearly upfront**
+   - Lead with: "I recommend Option X because..."
+   - Don't present options as equal if one is clearly better
+
+2. **One definitive answer per problem**
+   - If multiple solutions exist, pick one and explain why
+   - Don't create multiple files with different approaches
+   - If user asks for options, present them but still recommend one
+
+3. **Consolidate before presenting**
+   - Review all files created before showing to user
+   - Delete/consolidate duplicate files
+   - One SQL file, one code change file, one explanation file
+
+4. **Clear action items**
+   - Numbered steps (Step 1, Step 2, etc.)
+   - One file to run, one method to change
+   - No ambiguity about what to do next
+
+## When Changing Recommendations
+
+1. **Acknowledge the change**
+   - "I've reconsidered - here's why Option X is actually better..."
+   - Explain what changed your mind
+
+2. **Clean up previous files**
+   - Delete or clearly mark as "superseded"
+   - Don't leave multiple conflicting files
+
+3. **Final answer format**
+   - Create ONE final file: `FINAL_*.sql` or `FINAL_*.md`
+   - Mark it clearly as the definitive version
+
+## File Naming Conventions
+
+- `*_FINAL.sql` - The one SQL file to run
+- `*_STEPS.md` - Step-by-step instructions
+- `*_ANALYSIS.md` - Explanation/reasoning (optional)
+- Delete or mark as `*_OLD.md` for superseded files
+
+## Before Presenting to User
+
+1. Count files created - if > 3, consolidate
+2. Check for conflicting instructions - resolve them
+3. Ensure one clear "do this next" action
+4. Delete or mark old/duplicate files

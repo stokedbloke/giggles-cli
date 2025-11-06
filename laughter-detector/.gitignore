@@ -87,3 +87,14 @@ coverage.xml
 *.p12
 *.pfx
 secrets/
+
+# Temporary files (should be organized in docs/ or scripts/)
+# These patterns help prevent committing temporary analysis/debugging files
+COMMIT_*.txt
+COMMIT_*.md
+cron_configuration.txt
+data_integrity_report.json
+server.log
+
+# Backup files
+*.backup
