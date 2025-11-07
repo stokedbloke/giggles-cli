@@ -155,7 +155,14 @@ async def delete_limitless_key(
     credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
 ):
     """
-    Delete Limitless API key for user.
+    Delete Limitless API key and ALL user data (ultimate cleanup).
+    
+    This is the nuclear option - deletes:
+    - API key from database
+    - All audio segments
+    - All laughter detections
+    - All audio files (OGG) from disk
+    - All clip files (WAV) from disk
     
     Args:
         user: Current authenticated user
@@ -167,20 +174,45 @@ async def delete_limitless_key(
         HTTPException: If deletion fails
     """
     try:
+        user_id = user['user_id']
+        
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
         
-        # Actually delete the API key row from the database (RLS will ensure user can only delete their own)
-        # Need a WHERE clause - RLS policies will limit to the user's own data
+        # First, delete all user data (audio segments and laughter detections)
+        # This ensures database is cleaned up before deleting files
+        segments_result = supabase.table("audio_segments").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        print(f"🗑️ Deleted {len(segments_result.data)} audio segments")
+        
+        laughter_result = supabase.table("laughter_detections").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        print(f"🗑️ Deleted {len(laughter_result.data)} laughter detections")
+        
+        # Delete user's audio files (OGG files from Limitless API)
+        import shutil
+        from pathlib import Path
+        from ..config.settings import settings
+        
+        user_audio_dir = Path(settings.upload_dir) / "audio" / user_id
+        if user_audio_dir.exists():
+            shutil.rmtree(user_audio_dir)
+            print(f"🗑️ Deleted user audio files: {user_audio_dir}")
+        
+        # Delete user's laughter clip files (WAV clips extracted by YAMNet)
+        user_clips_dir = Path(settings.upload_dir) / "clips" / user_id
+        if user_clips_dir.exists():
+            shutil.rmtree(user_clips_dir)
+            print(f"🗑️ Deleted user clip files: {user_clips_dir}")
+        
+        # Finally, delete the API key itself (RLS will ensure user can only delete their own)
         result = supabase.table("limitless_keys").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
         
         if not result.data:
             # No keys found to delete
-            return {"message": "No API key found to delete"}
+            return {"message": "No API key found to delete (but all data was cleaned up)"}
         
-        print(f"Deleted {len(result.data)} API key(s) for user {user['user_id']}")
+        print(f"🗑️ Deleted {len(result.data)} API key(s) for user {user_id}")
         
-        return {"message": "API key deleted successfully"}
+        return {"message": "API key and all user data deleted successfully"}
         
     except Exception as e:
         print(f"❌ Error deleting API key: {str(e)}")
