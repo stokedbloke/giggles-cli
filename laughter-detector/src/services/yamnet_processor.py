@@ -126,7 +126,10 @@ class YAMNetProcessor:
             return laughter_events
             
         except Exception as e:
-            logger.error(f"Error processing audio file: {str(e)}")
+            import traceback
+            error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+            logger.error(f"Error processing audio file: {error_msg}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return []
     
     async def _load_audio(self, file_path: str) -> Tuple[np.ndarray, int]:
@@ -154,7 +157,10 @@ class YAMNetProcessor:
             return audio_data, sample_rate
             
         except Exception as e:
-            logger.error(f"Error loading audio file: {str(e)}")
+            import traceback
+            error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+            logger.error(f"Error loading audio file: {error_msg}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
     async def _run_inference(
