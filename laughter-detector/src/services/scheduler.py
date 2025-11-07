@@ -414,6 +414,12 @@ class Scheduler:
             print(f"❌ 🔍 DEBUG: Exception type: {type(e).__name__}")
             import traceback
             print(f"❌ 🔍 DEBUG: Full traceback: {traceback.format_exc()}")
+            # Clean up audio file even on error to prevent disk space buildup
+            try:
+                await self._delete_audio_file(file_path, user_id)
+                print(f"🗑️ Cleaned up audio file after processing error: {os.path.basename(file_path)}")
+            except Exception as cleanup_error:
+                print(f"⚠️ Failed to cleanup file after error: {str(cleanup_error)}")
     
     async def _get_active_users(self) -> list:
         """Get all users with active Limitless API keys."""
