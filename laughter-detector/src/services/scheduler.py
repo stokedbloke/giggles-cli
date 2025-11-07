@@ -207,6 +207,7 @@ class Scheduler:
                 current_time = chunk_end
                 chunk_count += 1
             
+            print(f"\n✅ All chunks processed! Total chunks: {chunk_count}, Total segments: {total_segments_processed}")
             
             # Save processing log to database
             # DATABASE WRITE: Creates or updates ONE row in processing_logs table for (user_id, date) combination
@@ -227,7 +228,20 @@ class Scheduler:
             print("\n" + "="*80)
             print("📊 FINAL PROCESSING SUMMARY")
             print("="*80)
-            enhanced_logger.log_processing_summary()
+            try:
+                if enhanced_logger:
+                    enhanced_logger.log_processing_summary()
+                else:
+                    print("⚠️ Enhanced logger not available - cannot print detailed summary")
+                    print(f"📦 Chunks processed: {chunk_count}")
+                    print(f"📁 Total segments processed: {total_segments_processed}")
+            except Exception as summary_error:
+                print(f"⚠️ Error printing summary: {str(summary_error)}")
+                import traceback
+                print(f"⚠️ Summary error traceback: {traceback.format_exc()}")
+                # Print basic info even if logger fails
+                print(f"📦 Chunks processed: {chunk_count}")
+                print(f"📁 Total segments processed: {total_segments_processed}")
             
             # Final orphan cleanup - run ONCE after all chunks are processed
             # Cleans up OGG files older than 2 days that have no references
