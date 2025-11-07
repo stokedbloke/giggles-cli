@@ -115,21 +115,20 @@ class YAMNetProcessor:
             List of detected laughter events
         """
         try:
-            logger.info(f"🎭 Starting YAMNet processing for user {user_id}")
+            print(f"🎭 Starting YAMNet processing for user {user_id}")
+            print(f"📁 Processing OGG file: {os.path.basename(audio_file_path)}")
             
             # Use plaintext file path (no decryption needed)
             if not os.path.exists(audio_file_path):
-                logger.error(f"Audio file not found: {audio_file_path}")
+                print(f"❌ Audio file not found: {audio_file_path}")
                 return []
-            
-            logger.info(f"📁 Loading audio file: {os.path.basename(audio_file_path)}")
             
             # Load and preprocess audio
             audio_data, sample_rate = await self._load_audio(audio_file_path)
-            logger.info(f"🎵 Audio loaded: {len(audio_data)} samples at {sample_rate}Hz")
+            print(f"🎵 Audio loaded: {len(audio_data)} samples ({len(audio_data)/sample_rate:.1f}s) at {sample_rate}Hz")
             
             # Run YAMNet inference
-            logger.info("🧠 Running YAMNet inference...")
+            print("🧠 Running YAMNet inference...")
             predictions = await self._run_inference(audio_data, sample_rate)
             
                         # Filter for laughter events
@@ -141,7 +140,7 @@ class YAMNetProcessor:
                 user_id  # Pass user_id for user-specific folder structure
             )
             
-            logger.info(f"Found {len(laughter_events)} laughter events in {audio_file_path}")
+            print(f"✅ Found {len(laughter_events)} laughter events in {os.path.basename(audio_file_path)}")
             
             # AGGRESSIVE memory cleanup after processing each file
             # This is critical on 2GB VPS to prevent OOM kills
