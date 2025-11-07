@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=giggles
 Group=giggles
-WorkingDirectory=/var/lib/giggles/laughter-detector
+WorkingDirectory=/var/lib/giggles/laughter-detector/laughter-detector
 Environment="PATH=/var/lib/giggles/venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="NUMBA_CACHE_DIR=/var/lib/giggles/.numba_cache"
 EnvironmentFile=/var/lib/giggles/.env
