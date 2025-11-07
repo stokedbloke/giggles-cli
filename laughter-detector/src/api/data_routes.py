@@ -510,24 +510,28 @@ async def delete_user_data(
         segments_result = supabase.table("audio_segments").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
         print(f"Deleted {len(segments_result.data)} audio segments")
         
-        # Also clean up orphaned files
-        import os
+        # Clean up user-specific audio files and clips from disk
         import shutil
         from pathlib import Path
+        from ..config.settings import settings
         
-        # Clean up all audio files (they're not user-specific)
-        audio_dir = Path("uploads/audio")
-        if audio_dir.exists():
-            shutil.rmtree(audio_dir)
-            audio_dir.mkdir(parents=True, exist_ok=True)
-            print(f"Cleaned up all audio files")
+        user_id = user['user_id']
         
-        # Clean up all laughter clips (they're not user-specific)
-        clips_dir = Path("uploads/clips")
-        if clips_dir.exists():
-            shutil.rmtree(clips_dir)
-            clips_dir.mkdir(parents=True, exist_ok=True)
-            print(f"Cleaned up all laughter clips")
+        # Delete user's audio files (OGG files from Limitless API)
+        user_audio_dir = Path(settings.upload_dir) / "audio" / user_id
+        if user_audio_dir.exists():
+            shutil.rmtree(user_audio_dir)
+            print(f"🗑️ Deleted user audio files: {user_audio_dir}")
+        else:
+            print(f"⚠️ User audio directory not found: {user_audio_dir}")
+        
+        # Delete user's laughter clip files (WAV clips extracted by YAMNet)
+        user_clips_dir = Path(settings.upload_dir) / "clips" / user_id
+        if user_clips_dir.exists():
+            shutil.rmtree(user_clips_dir)
+            print(f"🗑️ Deleted user clip files: {user_clips_dir}")
+        else:
+            print(f"⚠️ User clips directory not found: {user_clips_dir}")
         
         return {"message": "User data deleted successfully (API key preserved)"}
         
