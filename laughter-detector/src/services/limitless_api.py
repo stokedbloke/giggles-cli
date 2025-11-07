@@ -81,15 +81,49 @@ class LimitlessAPIService:
             
             # Process audio segments for laughter detection
             processed_segments = []
+            failed_files = []  # Track files that fail validation for cleanup
+            
             for segment_data in segments:
-                # Store plaintext file path (no encryption needed)
-                segment = AudioSegmentCreate(
-                    date=segment_data['date'],
-                    start_time=segment_data['start_time'],
-                    end_time=segment_data['end_time'],
-                    file_path=segment_data['file_path']  # Store plaintext file path
-                )
-                processed_segments.append(segment)
+                try:
+                    # Convert date string to datetime if needed
+                    if isinstance(segment_data['date'], str):
+                        # Parse date string (YYYY-MM-DD) to datetime at midnight UTC
+                        from datetime import datetime as dt
+                        date_dt = dt.fromisoformat(segment_data['date'] + 'T00:00:00+00:00')
+                    else:
+                        date_dt = segment_data['date']
+                    
+                    # Parse ISO format strings to datetime if needed
+                    start_time = segment_data['start_time']
+                    if isinstance(start_time, str):
+                        start_time = dt.fromisoformat(start_time.replace('Z', '+00:00'))
+                    
+                    end_time = segment_data['end_time']
+                    if isinstance(end_time, str):
+                        end_time = dt.fromisoformat(end_time.replace('Z', '+00:00'))
+                    
+                    # Store plaintext file path (no encryption needed)
+                    segment = AudioSegmentCreate(
+                        date=date_dt,
+                        start_time=start_time,
+                        end_time=end_time,
+                        file_path=segment_data['file_path']  # Store plaintext file path
+                    )
+                    processed_segments.append(segment)
+                except Exception as e:
+                    # If validation fails, mark file for cleanup
+                    print(f"⚠️ Validation failed for segment, will cleanup file: {str(e)}")
+                    if 'file_path' in segment_data:
+                        failed_files.append(segment_data['file_path'])
+            
+            # Clean up files that failed validation
+            for file_path in failed_files:
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        print(f"🗑️ Cleaned up failed validation file: {os.path.basename(file_path)}")
+                except Exception as cleanup_error:
+                    print(f"⚠️ Failed to cleanup file {file_path}: {str(cleanup_error)}")
             
             return processed_segments
             
