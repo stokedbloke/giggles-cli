@@ -48,6 +48,20 @@ class YAMNetProcessor:
     def _load_model(self):
         """Load YAMNet model from TensorFlow Hub."""
         try:
+            # Limit TensorFlow memory growth to prevent OOM kills on small VPS
+            # Only allocate GPU memory as needed, and limit CPU memory usage
+            gpus = tf.config.experimental.list_physical_devices('GPU')
+            if gpus:
+                try:
+                    for gpu in gpus:
+                        tf.config.experimental.set_memory_growth(gpu, True)
+                except RuntimeError as e:
+                    print(f"⚠️ Error setting GPU memory growth: {e}")
+            
+            # Limit TensorFlow to use only what it needs (prevents huge allocations)
+            # This helps on 2GB VPS systems
+            tf.config.experimental.set_memory_growth(tf.config.list_physical_devices('CPU')[0] if tf.config.list_physical_devices('CPU') else None, True)
+            
             # Load YAMNet model from TensorFlow Hub
             self.model = hub.load(self.model_url)
             
