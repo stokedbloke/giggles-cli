@@ -35,7 +35,20 @@ from supabase import create_client, Client
 from src.services.scheduler import Scheduler
 
 # Load environment variables
-load_dotenv()
+# Try multiple locations for .env file (VPS uses /var/lib/giggles/.env)
+env_paths = [
+    Path(__file__).parent / ".env",
+    Path("/var/lib/giggles/.env"),
+    Path.home() / ".env"
+]
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"📄 Loaded .env from: {env_path}")
+        break
+else:
+    # Fallback: try loading from default location
+    load_dotenv()
 
 
 class NightlyAudioProcessor:
