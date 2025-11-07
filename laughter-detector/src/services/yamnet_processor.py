@@ -128,8 +128,8 @@ class YAMNetProcessor:
         except Exception as e:
             import traceback
             error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
-            logger.error(f"Error processing audio file: {error_msg}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            print(f"❌ Error processing audio file: {error_msg}")
+            print(f"❌ Traceback: {traceback.format_exc()}")
             return []
     
     async def _load_audio(self, file_path: str) -> Tuple[np.ndarray, int]:
@@ -159,8 +159,8 @@ class YAMNetProcessor:
         except Exception as e:
             import traceback
             error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
-            logger.error(f"Error loading audio file: {error_msg}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            print(f"❌ Error loading audio file: {error_msg}")
+            print(f"❌ Traceback: {traceback.format_exc()}")
             raise
     
     async def _run_inference(
