@@ -218,9 +218,15 @@ class Scheduler:
             #   - trigger_type: 'manual' for Update Today button, 'scheduled' for cron jobs
             #   - status: 'completed' or 'failed'
             # TRIGGER: Called after all chunks are processed for the day
-            await enhanced_logger.save_to_database("completed", "Audio processing completed successfully")
+            try:
+                await enhanced_logger.save_to_database("completed", "Audio processing completed successfully")
+            except Exception as db_error:
+                print(f"⚠️ Error saving to database (but continuing): {str(db_error)}")
             
-            # Log processing summary to console
+            # Log processing summary to console (ALWAYS print, even if DB save failed)
+            print("\n" + "="*80)
+            print("📊 FINAL PROCESSING SUMMARY")
+            print("="*80)
             enhanced_logger.log_processing_summary()
             
             # Final orphan cleanup - run ONCE after all chunks are processed
