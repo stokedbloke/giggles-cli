@@ -143,9 +143,18 @@ class YAMNetProcessor:
             
             logger.info(f"Found {len(laughter_events)} laughter events in {audio_file_path}")
             
-            # Clear memory after processing
+            # AGGRESSIVE memory cleanup after processing each file
+            # This is critical on 2GB VPS to prevent OOM kills
             import gc
-            gc.collect()
+            import numpy as np
+            
+            # Delete large audio data arrays explicitly
+            del audio_data
+            del predictions
+            
+            # Force garbage collection multiple times
+            for _ in range(3):
+                gc.collect()
             
             return laughter_events
             
@@ -270,6 +279,12 @@ class YAMNetProcessor:
             result = self.model(audio_data)
             scores = result[0]  # Class predictions [num_patches, num_classes]
             
+            # CRITICAL: Delete audio_data immediately after inference to free memory
+            # The audio_data array can be 400-500MB, so delete it ASAP
+            del audio_data
+            import gc
+            gc.collect()
+            
             predictions = []
             patch_duration = 0.48  # YAMNet patch hop duration in seconds
             
@@ -287,6 +302,11 @@ class YAMNetProcessor:
                             class_id=class_id,
                             class_name=self.class_names[class_id] if class_id < len(self.class_names) else f"Class_{class_id}"
                         ))
+            
+            # Delete scores tensor to free memory
+            del scores
+            del result
+            gc.collect()
             
             return predictions
             

@@ -279,6 +279,8 @@ class Scheduler:
                 return 0
             
             # Process each segment, checking for duplicates
+            # CRITICAL: Process ONE file at a time with memory cleanup between files
+            # This prevents OOM kills on 2GB VPS by ensuring memory is freed before next file
             processed_count = 0
             for segment in segments:
                 # Get file_path for logging (handle both dict and object formats)
@@ -298,6 +300,11 @@ class Scheduler:
                     # Process the audio segment
                     await self._process_audio_segment(user_id, segment, segment_id)
                     processed_count += 1
+                    
+                    # CRITICAL: Add delay between files to allow memory cleanup
+                    # This gives TensorFlow and Python GC time to free memory before next file
+                    import asyncio
+                    await asyncio.sleep(2)  # 2 second delay between files
             
             # Already handled by run-once guard earlier; keep end-of-chunk cleanup disabled
             
@@ -411,20 +418,36 @@ class Scheduler:
         finally:
             # ALWAYS delete the audio file after processing (success or failure)
             # This prevents disk space buildup from failed processing attempts
+            print(f"🧹 Starting cleanup for file: {os.path.basename(file_path)}")
             try:
                 await self._delete_audio_file(file_path, user_id)
-                print(f"🗑️ Cleaned up audio file: {os.path.basename(file_path)}")
+                print(f"🗑️ ✅ Cleaned up audio file: {os.path.basename(file_path)}")
             except Exception as cleanup_error:
-                print(f"⚠️ Failed to cleanup file {file_path}: {str(cleanup_error)}")
+                print(f"⚠️ ❌ Failed to cleanup file {file_path}: {str(cleanup_error)}")
+                import traceback
+                print(f"⚠️ Cleanup error traceback: {traceback.format_exc()}")
             
-            # Clear TensorFlow memory cache to prevent OOM kills
+            # AGGRESSIVE memory cleanup to prevent OOM kills
+            # TensorFlow can hold onto memory even after clear_session()
             try:
                 import tensorflow as tf
-                tf.keras.backend.clear_session()
                 import gc
-                gc.collect()
+                
+                # Clear TensorFlow session
+                tf.keras.backend.clear_session()
+                
+                # Force garbage collection multiple times
+                for _ in range(3):
+                    gc.collect()
+                
+                # Clear any cached operations
+                tf.compat.v1.reset_default_graph()
+                
+                print(f"🧹 Memory cleanup completed for {os.path.basename(file_path)}")
             except Exception as mem_error:
                 print(f"⚠️ Failed to clear TensorFlow memory: {str(mem_error)}")
+                import traceback
+                print(f"⚠️ Memory cleanup error traceback: {traceback.format_exc()}")
     
     async def _get_active_users(self) -> list:
         """Get all users with active Limitless API keys."""
