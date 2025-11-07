@@ -209,11 +209,25 @@ async def get_laughter_detections(
         # DATABASE QUERY: Selects from laughter_detections table with timestamp filter
         # RLS (Row Level Security) will ensure user can only access their own data
         # ORDER BY: Chronological order for UI display (fixes issue where laughs weren't sorted)
+        
+        # DEBUG: Log query parameters
+        print(f"🔍 Querying laughter detections for date: {date} (user timezone: {user_timezone})")
+        print(f"🔍 UTC range: {start_of_day_utc.isoformat()} to {end_of_day_utc.isoformat()}")
+        
         result = supabase.table("laughter_detections").select(
             "*, audio_segments!inner(date, user_id)"
         ).gte("timestamp", start_of_day_utc.isoformat()).lt("timestamp", end_of_day_utc.isoformat()).order("timestamp").execute()
         
+        print(f"🔍 Query returned {len(result.data) if result.data else 0} laughter detections")
+        
         if not result.data:
+            # DEBUG: Try querying without the join to see if that's the issue
+            result_no_join = supabase.table("laughter_detections").select(
+                "*"
+            ).gte("timestamp", start_of_day_utc.isoformat()).lt("timestamp", end_of_day_utc.isoformat()).order("timestamp").execute()
+            print(f"🔍 Query WITHOUT join returned {len(result_no_join.data) if result_no_join.data else 0} laughter detections")
+            if result_no_join.data:
+                print(f"⚠️ ⚠️ INNER JOIN is filtering out {len(result_no_join.data)} detections! This is a bug.")
             return []
         
         # Convert to response model
