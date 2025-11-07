@@ -120,7 +120,7 @@ class Scheduler:
         This is the main entry point for processing a user's audio. It handles:
         - Incremental processing (resumes from last processed timestamp)
         - Timezone-aware date range calculation
-        - 2-hour chunk processing
+        - 30-minute chunk processing (prevents OOM on 2GB VPS)
         - Enhanced logging for database tracking
         
         Args:
@@ -188,15 +188,17 @@ class Scheduler:
             
             print(f"📊 Processing range (UTC): {start_time.strftime('%Y-%m-%d %H:%M')} to {now_utc.strftime('%Y-%m-%d %H:%M')}")
             
-            # Process the full day in 2-hour chunks
+            # Process the full day in 30-minute chunks
             # Each chunk downloads one OGG file from Limitless API
+            # CRITICAL: 30-minute chunks prevent OOM kills on 2GB VPS
+            # 48 chunks per day (24 hours / 0.5 hours) ensures all data is processed
             # total_segments_processed = count of NEW segments stored (skips duplicates)
             current_time = start_time  # Start from latest processed time, not midnight
             chunk_count = 0
             total_segments_processed = 0
             
             while current_time < now_utc:
-                chunk_end = min(current_time + timedelta(hours=2), now_utc)
+                chunk_end = min(current_time + timedelta(minutes=30), now_utc)
                 print(f"📦 Processing chunk {chunk_count + 1}: {current_time.strftime('%H:%M')} UTC to {chunk_end.strftime('%H:%M')} UTC")
                 
                 segments_processed = await self._process_date_range(user_id, api_key, current_time, chunk_end)
@@ -238,7 +240,7 @@ class Scheduler:
         """
         Process audio for a specific date range with enhanced logging.
         
-        This method orchestrates the processing of a single 2-hour chunk:
+        This method orchestrates the processing of a single 30-minute chunk:
         1. Pre-download check (prevents wasteful OGG downloads)
         2. Download OGG file from Limitless API
         3. Store segment metadata in database

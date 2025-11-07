@@ -28,7 +28,7 @@ class LimitlessAPIService:
         self.base_url = "https://api.limitless.ai"
         self.rate_limit_requests = settings.rate_limit_requests
         self.rate_limit_window = settings.rate_limit_window
-        self.max_audio_minutes = 120  # Maximum minutes per request
+        self.max_audio_minutes = 30  # Maximum minutes per request (reduced for 2GB VPS compatibility)
     
     async def get_audio_segments(
         self, 

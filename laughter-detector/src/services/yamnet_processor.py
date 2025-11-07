@@ -194,14 +194,12 @@ class YAMNetProcessor:
                 logger.warning(f"⚠️ File too large ({file_size_mb:.1f}MB), skipping to prevent OOM: {os.path.basename(file_path)}")
                 raise ValueError(f"File too large ({file_size_mb:.1f}MB) for 2GB VPS")
             
-            # Load audio with librosa - limit to 30 minutes max (prevents OOM on 2GB VPS)
-            # 30 minutes at 16kHz = 28,800,000 samples = ~230MB in memory
-            max_duration_seconds = 30 * 60  # 30 minutes
+            # Load audio with librosa - no duration limit needed since chunks are now 30 minutes
+            # 30 minutes at 16kHz = 28,800,000 samples = ~230MB in memory (safe for 2GB VPS)
             audio_data, sample_rate = librosa.load(
                 file_path,
                 sr=self.config.sample_rate,
-                mono=True,
-                duration=max_duration_seconds  # CRITICAL: Limit duration to prevent OOM
+                mono=True
             )
             
             # Ensure audio is in the correct format
