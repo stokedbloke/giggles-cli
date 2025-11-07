@@ -177,6 +177,9 @@ class YAMNetProcessor:
         """
         Load audio file and convert to required format.
         
+        CRITICAL: On 2GB VPS, we must limit file size to prevent OOM kills.
+        Files larger than 30 minutes will be truncated.
+        
         Args:
             file_path: Path to audio file
             
@@ -184,16 +187,28 @@ class YAMNetProcessor:
             Tuple of (audio_data, sample_rate)
         """
         try:
-            # Load audio with librosa
+            import os
+            # Check file size first - skip if too large (prevents OOM)
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            if file_size_mb > 50:  # Skip files larger than 50MB
+                logger.warning(f"⚠️ File too large ({file_size_mb:.1f}MB), skipping to prevent OOM: {os.path.basename(file_path)}")
+                raise ValueError(f"File too large ({file_size_mb:.1f}MB) for 2GB VPS")
+            
+            # Load audio with librosa - limit to 30 minutes max (prevents OOM on 2GB VPS)
+            # 30 minutes at 16kHz = 28,800,000 samples = ~230MB in memory
+            max_duration_seconds = 30 * 60  # 30 minutes
             audio_data, sample_rate = librosa.load(
                 file_path,
                 sr=self.config.sample_rate,
-                mono=True
+                mono=True,
+                duration=max_duration_seconds  # CRITICAL: Limit duration to prevent OOM
             )
             
             # Ensure audio is in the correct format
             if len(audio_data.shape) > 1:
                 audio_data = np.mean(audio_data, axis=1)
+            
+            logger.info(f"📊 Loaded {len(audio_data)} samples ({len(audio_data)/sample_rate:.1f}s) from {os.path.basename(file_path)}")
             
             return audio_data, sample_rate
             

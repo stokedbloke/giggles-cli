@@ -297,14 +297,30 @@ class Scheduler:
                 # Store the segment in the database first
                 segment_id = await self._store_audio_segment(user_id, segment)
                 if segment_id:
+                    # CRITICAL: Check file size before processing to prevent OOM
+                    import os
+                    if os.path.exists(file_path):
+                        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                        if file_size_mb > 50:
+                            print(f"⚠️ ⚠️ SKIPPING file {os.path.basename(file_path)}: too large ({file_size_mb:.1f}MB) for 2GB VPS")
+                            # Delete the file immediately to prevent disk buildup
+                            await self._delete_audio_file(file_path, user_id)
+                            continue
+                    
                     # Process the audio segment
-                    await self._process_audio_segment(user_id, segment, segment_id)
-                    processed_count += 1
+                    try:
+                        await self._process_audio_segment(user_id, segment, segment_id)
+                        processed_count += 1
+                    except Exception as process_error:
+                        # If processing fails, delete file immediately
+                        print(f"⚠️ Processing failed, deleting file: {os.path.basename(file_path)}")
+                        await self._delete_audio_file(file_path, user_id)
+                        raise  # Re-raise to be caught by outer handler
                     
                     # CRITICAL: Add delay between files to allow memory cleanup
                     # This gives TensorFlow and Python GC time to free memory before next file
                     import asyncio
-                    await asyncio.sleep(2)  # 2 second delay between files
+                    await asyncio.sleep(5)  # Increased to 5 seconds for better memory cleanup
             
             # Already handled by run-once guard earlier; keep end-of-chunk cleanup disabled
             
@@ -418,14 +434,15 @@ class Scheduler:
         finally:
             # ALWAYS delete the audio file after processing (success or failure)
             # This prevents disk space buildup from failed processing attempts
-            print(f"🧹 Starting cleanup for file: {os.path.basename(file_path)}")
+            # CRITICAL: This runs even if process is killed by OOM, but only if Python gets a chance
+            print(f"🧹 [FINALLY] Starting cleanup for file: {os.path.basename(file_path)}")
             try:
                 await self._delete_audio_file(file_path, user_id)
-                print(f"🗑️ ✅ Cleaned up audio file: {os.path.basename(file_path)}")
+                print(f"🗑️ ✅ [FINALLY] Cleaned up audio file: {os.path.basename(file_path)}")
             except Exception as cleanup_error:
-                print(f"⚠️ ❌ Failed to cleanup file {file_path}: {str(cleanup_error)}")
+                print(f"⚠️ ❌ [FINALLY] Failed to cleanup file {file_path}: {str(cleanup_error)}")
                 import traceback
-                print(f"⚠️ Cleanup error traceback: {traceback.format_exc()}")
+                print(f"⚠️ [FINALLY] Cleanup error traceback: {traceback.format_exc()}")
             
             # AGGRESSIVE memory cleanup to prevent OOM kills
             # TensorFlow can hold onto memory even after clear_session()
@@ -443,11 +460,11 @@ class Scheduler:
                 # Clear any cached operations
                 tf.compat.v1.reset_default_graph()
                 
-                print(f"🧹 Memory cleanup completed for {os.path.basename(file_path)}")
+                print(f"🧹 [FINALLY] Memory cleanup completed for {os.path.basename(file_path)}")
             except Exception as mem_error:
-                print(f"⚠️ Failed to clear TensorFlow memory: {str(mem_error)}")
+                print(f"⚠️ [FINALLY] Failed to clear TensorFlow memory: {str(mem_error)}")
                 import traceback
-                print(f"⚠️ Memory cleanup error traceback: {traceback.format_exc()}")
+                print(f"⚠️ [FINALLY] Memory cleanup error traceback: {traceback.format_exc()}")
     
     async def _get_active_users(self) -> list:
         """Get all users with active Limitless API keys."""
