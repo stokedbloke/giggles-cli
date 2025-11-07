@@ -179,13 +179,16 @@ async def delete_limitless_key(
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
         
-        # First, delete all user data (audio segments and laughter detections)
+        # First, delete all user data (audio segments, laughter detections, and processing logs)
         # This ensures database is cleaned up before deleting files
         segments_result = supabase.table("audio_segments").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
         print(f"🗑️ Deleted {len(segments_result.data)} audio segments")
         
         laughter_result = supabase.table("laughter_detections").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
         print(f"🗑️ Deleted {len(laughter_result.data)} laughter detections")
+        
+        processing_logs_result = supabase.table("processing_logs").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        print(f"🗑️ Deleted {len(processing_logs_result.data)} processing logs")
         
         # Delete user's audio files (OGG files from Limitless API)
         import shutil

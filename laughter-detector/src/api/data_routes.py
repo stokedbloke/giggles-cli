@@ -503,12 +503,16 @@ async def delete_user_data(
         # Delete laughter detections (RLS will ensure user can only delete their own)
         # Need a WHERE clause - RLS policies will limit to the user's own data
         laughter_result = supabase.table("laughter_detections").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-        print(f"Deleted {len(laughter_result.data)} laughter detections")
+        print(f"🗑️ Deleted {len(laughter_result.data)} laughter detections")
         
         # Delete audio segments (RLS will ensure user can only delete their own)
         # Need a WHERE clause - RLS policies will limit to the user's own data
         segments_result = supabase.table("audio_segments").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-        print(f"Deleted {len(segments_result.data)} audio segments")
+        print(f"🗑️ Deleted {len(segments_result.data)} audio segments")
+        
+        # Delete processing logs (RLS will ensure user can only delete their own)
+        processing_logs_result = supabase.table("processing_logs").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        print(f"🗑️ Deleted {len(processing_logs_result.data)} processing logs")
         
         # Clean up user-specific audio files and clips from disk
         import shutil
