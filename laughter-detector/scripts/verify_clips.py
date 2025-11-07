@@ -2,15 +2,40 @@
 """
 Quick script to verify clip files on disk match database records.
 Run this on the VPS to check data integrity.
+
+Usage:
+    /var/lib/giggles/venv/bin/python3 scripts/verify_clips.py <user_id>
+    OR
+    source /var/lib/giggles/venv/bin/activate
+    python3 scripts/verify_clips.py <user_id>
 """
 import os
 import sys
 from pathlib import Path
+
+# Add project root to path so we can import from src
+script_dir = Path(__file__).parent
+project_root = script_dir.parent
+sys.path.insert(0, str(project_root))
+
 from dotenv import load_dotenv
 from supabase import create_client
 
 # Load environment variables
-load_dotenv()
+# Try multiple locations for .env file
+env_paths = [
+    project_root / ".env",
+    Path("/var/lib/giggles/.env"),
+    Path.home() / ".env"
+]
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"📄 Loaded .env from: {env_path}")
+        break
+else:
+    # Fallback: try loading from default location
+    load_dotenv()
 
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
