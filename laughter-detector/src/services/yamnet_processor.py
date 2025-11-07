@@ -145,10 +145,10 @@ class YAMNetProcessor:
             
             # AGGRESSIVE memory cleanup after processing each file
             # This is critical on 2GB VPS to prevent OOM kills
+            # Delete large arrays AFTER all processing is complete
             import gc
-            import numpy as np
             
-            # Delete large audio data arrays explicitly
+            # Delete large audio data arrays explicitly (now safe - all processing done)
             del audio_data
             del predictions
             
