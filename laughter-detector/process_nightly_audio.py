@@ -216,13 +216,14 @@ class NightlyAudioProcessor:
             from src.services.enhanced_logger import get_enhanced_logger
             enhanced_logger = get_enhanced_logger(user_id, 'cron', process_date=start_of_yesterday.date())
             
-            # Process yesterday in 2-hour chunks (same as reprocess button)
+            # Process yesterday in 30-minute chunks (same as Update Today button)
+            # CRITICAL: 30-minute chunks prevent OOM kills on 2GB VPS
             current_time = start_of_yesterday_utc
             chunk_count = 0
             total_segments_processed = 0
             
             while current_time < end_of_yesterday_utc:
-                chunk_end = min(current_time + timedelta(hours=2), end_of_yesterday_utc)
+                chunk_end = min(current_time + timedelta(minutes=30), end_of_yesterday_utc)
                 print(f"📦 Processing chunk {chunk_count + 1}: {current_time.strftime('%H:%M')} UTC to {chunk_end.strftime('%H:%M')} UTC")
                 
                 segments_processed = await self.scheduler._process_date_range(user_id, api_key, current_time, chunk_end)
