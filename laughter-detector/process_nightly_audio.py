@@ -25,16 +25,10 @@ from pathlib import Path
 from typing import List, Dict, Any
 import pytz
 
-# Add the src directory to the path so we can import our modules
-sys.path.append(str(Path(__file__).parent / "src"))
-
+# CRITICAL: Load environment variables BEFORE importing any modules that use settings
+# This must happen before importing scheduler (which imports settings)
 from dotenv import load_dotenv
-from supabase import create_client, Client
 
-# Import our services
-from src.services.scheduler import Scheduler
-
-# Load environment variables
 # Try multiple locations for .env file (VPS uses /var/lib/giggles/.env)
 env_paths = [
     Path(__file__).parent / ".env",
@@ -49,6 +43,14 @@ for env_path in env_paths:
 else:
     # Fallback: try loading from default location
     load_dotenv()
+
+# Add the src directory to the path so we can import our modules
+sys.path.append(str(Path(__file__).parent / "src"))
+
+from supabase import create_client, Client
+
+# Import our services (settings will now load correctly since .env is loaded)
+from src.services.scheduler import Scheduler
 
 
 class NightlyAudioProcessor:
