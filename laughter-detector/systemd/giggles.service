@@ -8,6 +8,7 @@ User=giggles
 Group=giggles
 WorkingDirectory=/var/lib/giggles/laughter-detector
 Environment="PATH=/var/lib/giggles/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="NUMBA_CACHE_DIR=/var/lib/giggles/.numba_cache"
 EnvironmentFile=/var/lib/giggles/.env
 
 # Start command
@@ -22,7 +23,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/giggles/uploads /var/lib/giggles/logs
+ReadWritePaths=/var/lib/giggles/uploads /var/lib/giggles/logs /var/lib/giggles/.numba_cache
 
 # Resource limits
 LimitNOFILE=65536
