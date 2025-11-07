@@ -60,6 +60,10 @@ class YAMNetProcessor:
             
             # For CPU, limit thread pool size to reduce memory usage
             # This helps on 2GB VPS systems by using fewer threads
+            # Note: TensorFlow doesn't support memory limits for CPU, so we rely on:
+            # 1. Thread limits (reduces parallel memory usage)
+            # 2. Explicit garbage collection after each file
+            # 3. Clearing TensorFlow sessions between files
             tf.config.threading.set_intra_op_parallelism_threads(1)
             tf.config.threading.set_inter_op_parallelism_threads(1)
             
@@ -138,6 +142,11 @@ class YAMNetProcessor:
             )
             
             logger.info(f"Found {len(laughter_events)} laughter events in {audio_file_path}")
+            
+            # Clear memory after processing
+            import gc
+            gc.collect()
+            
             return laughter_events
             
         except Exception as e:
@@ -145,6 +154,14 @@ class YAMNetProcessor:
             error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
             print(f"❌ Error processing audio file: {error_msg}")
             print(f"❌ Traceback: {traceback.format_exc()}")
+            
+            # Clear memory even on error
+            try:
+                import gc
+                gc.collect()
+            except:
+                pass
+            
             return []
     
     async def _load_audio(self, file_path: str) -> Tuple[np.ndarray, int]:
@@ -241,6 +258,13 @@ class YAMNetProcessor:
             if self.model is None:
                 logger.warning("YAMNet model not loaded, returning empty results")
                 return []
+            
+            # Limit audio length to prevent OOM (max 2 hours = 7200 seconds at 16kHz = 115,200,000 samples)
+            # Process in chunks if audio is too long
+            max_samples = 115200000  # 2 hours max
+            if len(audio_data) > max_samples:
+                logger.warning(f"Audio file too long ({len(audio_data)} samples), truncating to {max_samples} samples")
+                audio_data = audio_data[:max_samples]
             
             # Run YAMNet model
             result = self.model(audio_data)

@@ -17,7 +17,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-APP_DIR="/var/lib/giggles/laughter-detector"
+APP_DIR="/var/lib/giggles/laughter-detector/laughter-detector"
 VENV_DIR="/var/lib/giggles/venv"
 LOG_DIR="/var/lib/giggles/logs"
 CRON_SCRIPT="$APP_DIR/process_nightly_audio.py"

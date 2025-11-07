@@ -372,15 +372,13 @@ class Scheduler:
 
     async def _process_audio_segment(self, user_id: str, segment, segment_id: str):
         """Process a single audio segment for laughter detection."""
+        # Extract file_path FIRST so it's always available for cleanup
+        if isinstance(segment, dict):
+            file_path = segment['file_path']
+        else:
+            file_path = segment.file_path
+        
         try:
-            
-            # Handle both dict and object formats
-            if isinstance(segment, dict):
-                file_path = segment['file_path']
-            else:
-                file_path = segment.file_path
-            
-            
             # Run YAMNet processing on actual audio file
             laughter_events = await yamnet_processor.process_audio_file(
                 file_path, user_id
@@ -405,21 +403,28 @@ class Scheduler:
             # Mark segment as processed
             await self._mark_segment_processed(segment_id)
             
-            # SECURITY: Delete the audio file after processing (as per requirements)
-            await self._delete_audio_file(file_path, user_id)
-            
-            
         except Exception as e:
             print(f"❌ ❌ Error processing audio segment {segment_id}: {str(e)}")
             print(f"❌ 🔍 DEBUG: Exception type: {type(e).__name__}")
             import traceback
             print(f"❌ 🔍 DEBUG: Full traceback: {traceback.format_exc()}")
-            # Clean up audio file even on error to prevent disk space buildup
+        finally:
+            # ALWAYS delete the audio file after processing (success or failure)
+            # This prevents disk space buildup from failed processing attempts
             try:
                 await self._delete_audio_file(file_path, user_id)
-                print(f"🗑️ Cleaned up audio file after processing error: {os.path.basename(file_path)}")
+                print(f"🗑️ Cleaned up audio file: {os.path.basename(file_path)}")
             except Exception as cleanup_error:
-                print(f"⚠️ Failed to cleanup file after error: {str(cleanup_error)}")
+                print(f"⚠️ Failed to cleanup file {file_path}: {str(cleanup_error)}")
+            
+            # Clear TensorFlow memory cache to prevent OOM kills
+            try:
+                import tensorflow as tf
+                tf.keras.backend.clear_session()
+                import gc
+                gc.collect()
+            except Exception as mem_error:
+                print(f"⚠️ Failed to clear TensorFlow memory: {str(mem_error)}")
     
     async def _get_active_users(self) -> list:
         """Get all users with active Limitless API keys."""

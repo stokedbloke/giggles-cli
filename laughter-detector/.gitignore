@@ -96,5 +96,11 @@ cron_configuration.txt
 data_integrity_report.json
 server.log
 
+# Planning/temporary markdown files
+NEXT_FEATURE_BRANCH_DEPLOYMENT.md
+NEXT_STEPS_AFTER_COMMIT.md
+PR_DESCRIPTION_FILE_ORGANIZATION.md
+docs/deployment/PRICING_TIER_RECOMMENDATIONS.md
+
 # Backup files
 *.backup
