@@ -569,9 +569,27 @@ async def reprocess_date_range_api(
         
         # Import the reprocess function from manual_reprocess_yesterday
         import sys
-        import os
-        script_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        sys.path.insert(0, script_dir)
+        from pathlib import Path
+
+        maintenance_dir = Path(__file__).resolve().parents[2] / "scripts" / "maintenance"
+        maintenance_path = str(maintenance_dir)
+        import importlib.util as _importlib_util  # local import to avoid global side-effects
+        try:
+            print(f"[reprocess] attempting import: maintenance_dir={maintenance_path} exists={maintenance_dir.exists()}")
+        except Exception:
+            pass
+        if maintenance_path not in sys.path:
+            sys.path.insert(0, maintenance_path)
+            try:
+                print(f"[reprocess] inserted into sys.path: {maintenance_path}")
+            except Exception:
+                pass
+        else:
+            try:
+                print(f"[reprocess] already on sys.path: {maintenance_path}")
+            except Exception:
+                pass
+
         from manual_reprocess_yesterday import reprocess_date_range as reprocess_func
         
         # Call the reprocess function (it handles all the work)

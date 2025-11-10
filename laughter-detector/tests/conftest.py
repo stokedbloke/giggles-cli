@@ -10,10 +10,61 @@ import tempfile
 import os
 from typing import AsyncGenerator
 from fastapi.testclient import TestClient
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
+import sys
+import types
+
+os.environ.setdefault("DEBUG", "true")
+
+# Prevent Supabase client creation during tests (avoids HTTPX proxy errors)
+_mock_supabase_client_factory = None
+try:
+    import supabase  # type: ignore
+
+    if not os.environ.get("UNIT_TEST_SUPABASE_PATCHED"):
+        def _mock_create_client(*args, **kwargs):
+            mock_client = MagicMock()
+            mock_client.auth = MagicMock()
+            mock_client.table.return_value = MagicMock()
+            return mock_client
+
+        supabase.create_client = _mock_create_client  # type: ignore[attr-defined]
+        _mock_supabase_client_factory = _mock_create_client
+        os.environ["UNIT_TEST_SUPABASE_PATCHED"] = "1"
+except ImportError:
+    pass
+
+# Stub YAMNet processor to avoid heavy TensorFlow dependency during tests
+if "src.services.yamnet_processor" not in sys.modules:
+    yamnet_stub = types.ModuleType("src.services.yamnet_processor")
+
+    class _FakeYamnetProcessor:
+        async def process_audio_file(self, *args, **kwargs):
+            return []
+
+    yamnet_stub.YAMNetProcessor = _FakeYamnetProcessor  # type: ignore[attr-defined]
+    yamnet_stub.yamnet_processor = _FakeYamnetProcessor()  # type: ignore[attr-defined]
+    sys.modules["src.services.yamnet_processor"] = yamnet_stub
 
 from src.main import app
 from src.config.settings import settings
+
+if _mock_supabase_client_factory is not None:
+    try:
+        from src.api import data_routes
+        data_routes.create_client = _mock_supabase_client_factory  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+try:
+    from src.api.dependencies import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": "test_user_123",
+        "email": "test@example.com"
+    }
+except Exception:
+    pass
 
 
 @pytest.fixture(scope="session")

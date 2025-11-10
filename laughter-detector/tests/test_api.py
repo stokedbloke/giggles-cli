@@ -234,6 +234,34 @@ class TestDataManagementEndpoints:
         
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
+    def test_reprocess_date_range_success(self, client, mock_auth_token):
+        """Test manual reprocess date range endpoint imports and executes."""
+        import sys
+        from pathlib import Path
+
+        maintenance_dir = Path(__file__).resolve().parents[1] / "scripts" / "maintenance"
+        if not maintenance_dir.exists():
+            maintenance_dir = Path(__file__).resolve().parents[2] / "scripts" / "maintenance"
+        maintenance_path = str(maintenance_dir)
+        if maintenance_path not in sys.path:
+            sys.path.insert(0, maintenance_path)
+
+        with patch(
+            "manual_reprocess_yesterday.reprocess_date_range",
+            new=AsyncMock()
+        ) as mock_reprocess:
+            headers = {"Authorization": f"Bearer {mock_auth_token}"}
+            payload = {"start_date": "2024-11-07", "end_date": "2024-11-09"}
+            
+            response = client.post(
+                "/api/reprocess-date-range",
+                json=payload,
+                headers=headers
+            )
+            
+            assert response.status_code == status.HTTP_200_OK, response.json()
+            mock_reprocess.assert_awaited_once()
+
 
 class TestHealthCheckEndpoint:
     """Test cases for health check endpoint."""
