@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     allowed_origins: str = "http://localhost:8000"
+    allowed_hosts: Optional[str] = "localhost,127.0.0.1"
     
     # File Storage Configuration
     upload_dir: str = "./uploads"
