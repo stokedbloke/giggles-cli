@@ -6,6 +6,7 @@ to detect laughter events with timestamps and probability scores.
 """
 
 import os
+import gc
 import tempfile
 import asyncio
 import shutil
@@ -134,6 +135,8 @@ class YAMNetProcessor:
         Returns:
             List of detected laughter events
         """
+        audio_data = None
+        predictions: Optional[List[YAMNetPrediction]] = None
         try:
             logger.info(f"🎭 Starting YAMNet processing for user {user_id}")
 
@@ -169,6 +172,13 @@ class YAMNetProcessor:
         except Exception as e:
             logger.error(f"Error processing audio file: {str(e)}")
             return []
+        finally:
+            if audio_data is not None:
+                # Reason: release per-chunk audio buffers on memory-constrained VPS
+                del audio_data
+            if predictions is not None:
+                del predictions
+            gc.collect()
 
     async def _load_audio(self, file_path: str) -> Tuple[np.ndarray, int]:
         """
