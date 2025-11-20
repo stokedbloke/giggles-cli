@@ -34,15 +34,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import pytz
 
-# Add the src directory to the path
-sys.path.append(str(Path(__file__).parent))
+# Add project root and scripts directory to path
+project_root = Path(__file__).parent.parent.parent
+scripts_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(scripts_dir))
 
 from dotenv import load_dotenv
 from supabase import create_client
 from typing import Optional
 
 # REUSE EXISTING CODE: Import deletion functions from manual_reprocess_yesterday
-from manual_reprocess_yesterday import clear_database_records, clear_disk_files
+from maintenance.manual_reprocess_yesterday import clear_database_records, clear_disk_files
 
 load_dotenv()
 

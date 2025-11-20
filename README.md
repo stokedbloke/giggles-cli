@@ -28,7 +28,8 @@ Giggles is a secure, AI-powered web application that automatically detects and t
 - pip (Python package manager)
 - Supabase account and project
 - Limitless AI Pendant API key
-- 8GB RAM minimum (for YAMNet model)
+- 8GB RAM recommended for TensorFlow workloads
+- 2GB RAM is sufficient in production when audio is processed in 30-minute chunks
 
 ## Installation
 
@@ -123,6 +124,13 @@ The application will be available at `http://localhost:8001`
 - Listen to audio clips of detected laughter
 - Add notes to laughter detections
 - Delete individual detections or all data
+
+## Operational Notes
+
+- **Chunk size matters**: The Limitless API downloads are processed in 30-minute chunks. Larger windows risk OOM kills on small VPS instances.
+- **Limitless 404s are normal**: A `404` from `/v1/download-audio` simply means the pendant has no audio for that window. The app logs the skip and moves on.
+- **Supabase clients**: All Supabase access is centralized via `src/services/supabase_client.py` so that RLS policies and HTTPX proxy patches are consistently applied.
+- **Dependency pins**: `cryptography==41.0.7`, `httpx==0.25.2`, and `supabase==2.4.0` are required together (the `src/utils/httpx_patch.py` shim allows `proxy` kwargs).
 
 ## Project Structure
 
