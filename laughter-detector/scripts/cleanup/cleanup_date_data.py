@@ -40,14 +40,16 @@ scripts_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(scripts_dir))
 
+# Load .env BEFORE importing anything that uses settings
 from dotenv import load_dotenv
+load_dotenv(project_root / ".env")
+
 from supabase import create_client
 from typing import Optional
 
 # REUSE EXISTING CODE: Import deletion functions from manual_reprocess_yesterday
+# (This import happens AFTER load_dotenv to ensure settings can initialize)
 from maintenance.manual_reprocess_yesterday import clear_database_records, clear_disk_files
-
-load_dotenv()
 
 
 async def delete_date_data(target_date_str: str, user_id: Optional[str] = None):
