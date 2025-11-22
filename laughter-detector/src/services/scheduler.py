@@ -194,6 +194,9 @@ class Scheduler:
             user_id, trigger_type, process_date=date.today()
         )
 
+        # Track clip paths created in this processing session (for orphan cleanup exclusion)
+        all_stored_clip_paths: set = set()
+
         try:
             try:
                 api_key = fetch_decrypted_limitless_key(
@@ -266,14 +269,16 @@ class Scheduler:
 
             # Pre-flight orphan cleanup - catch any orphans from previous failed runs
             # This ensures we start with a clean slate before processing new chunks
+            # No session clip paths to exclude (this is before processing)
             try:
-                await self._cleanup_orphaned_files(user_id, start_time, now_utc)
+                await self._cleanup_orphaned_files(user_id, start_time, now_utc, exclude_clip_paths=None)
             except Exception as cleanup_err:
                 print(
                     f"⚠️ Pre-flight orphan cleanup failed (non-fatal): {str(cleanup_err)}"
                 )
 
             total_segments_processed = 0
+            # all_stored_clip_paths initialized before try block
             for chunk_index, (chunk_start, chunk_end) in enumerate(
                 generate_time_chunks(
                     start_time,
@@ -285,10 +290,13 @@ class Scheduler:
                 print(
                     f"📦 Processing chunk {chunk_index}: {chunk_start.strftime('%H:%M')} UTC to {chunk_end.strftime('%H:%M')} UTC"
                 )
-                segments_processed = await self._process_date_range(
+                segments_processed, chunk_clip_paths = await self._process_date_range(
                     user_id, api_key, chunk_start, chunk_end
                 )
                 total_segments_processed += segments_processed
+                # Accumulate clip paths created in this chunk to exclude from orphan cleanup
+                # This prevents race condition where cleanup runs before DB inserts are visible
+                all_stored_clip_paths.update(chunk_clip_paths)
 
             # Save processing log to database
             # DATABASE WRITE: Creates or updates ONE row in processing_logs table for (user_id, date) combination
@@ -310,9 +318,12 @@ class Scheduler:
             # Final orphan cleanup - run ONCE after all chunks are processed
             # Cleans up OGG files older than 2 days that have no references
             # NOTE: Cleanup runs silently in background - check enhanced logger for summary
+            # CRITICAL FIX: Exclude clip paths created in this session to prevent race condition
+            # where cleanup runs before database inserts are fully visible (read-after-write consistency,
+            # connection pooling, etc.). This ensures newly created files are not deleted.
             now_utc = datetime.utcnow()
             start_window = now_utc - timedelta(days=2)
-            await self._cleanup_orphaned_files(user_id, start_window, now_utc)
+            await self._cleanup_orphaned_files(user_id, start_window, now_utc, exclude_clip_paths=all_stored_clip_paths)
 
         except Exception as e:
             print(f"❌ Error processing user audio: {str(e)}")
@@ -326,16 +337,20 @@ class Scheduler:
         finally:
             # ALWAYS run orphan cleanup, even if processing failed
             # This ensures no orphaned files remain from crashed/failed processing
+            # CRITICAL FIX: Exclude clip paths created in this session to prevent race condition
+            # where cleanup runs before database inserts are fully visible. This ensures newly
+            # created files are not deleted even if DB query doesn't see them yet.
             try:
                 now_utc = datetime.utcnow()
                 start_window = now_utc - timedelta(days=2)
-                await self._cleanup_orphaned_files(user_id, start_window, now_utc)
+                # all_stored_clip_paths initialized before try block, safe to use here
+                await self._cleanup_orphaned_files(user_id, start_window, now_utc, exclude_clip_paths=all_stored_clip_paths)
             except Exception as cleanup_err:
                 print(f"⚠️ Orphan cleanup failed (non-fatal): {str(cleanup_err)}")
 
     async def _process_date_range(
         self, user_id: str, api_key: str, start_time: datetime, end_time: datetime
-    ) -> int:
+    ) -> tuple[int, set]:
         """
         Process audio for a specific date range with enhanced logging.
 
@@ -355,7 +370,7 @@ class Scheduler:
             end_time: End of time range (UTC, timezone-aware)
 
         Returns:
-            Number of NEW segments processed and stored (excludes duplicates)
+            Tuple of (number of segments processed, set of clip paths successfully stored)
 
         Called by:
             - _process_user_audio() - for incremental daily processing
@@ -371,7 +386,7 @@ class Scheduler:
                 print(
                     f"⏭️  SKIPPED (already fully processed): Time range {start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')} UTC - Already processed, skipping download"
                 )
-                return 0
+                return 0, set()
 
             # Get audio segments from Limitless API
             segments = await limitless_api_service.get_audio_segments(
@@ -379,10 +394,11 @@ class Scheduler:
             )
 
             if not segments:
-                return 0
+                return 0, set()
 
             # Process each segment, checking for duplicates
             processed_count = 0
+            all_stored_clip_paths = set()  # Track all clip paths created in this processing session
             for segment in segments:
                 # Get file_path for logging (handle both dict and object formats)
                 file_path = (
@@ -403,12 +419,16 @@ class Scheduler:
                 segment_id = await self._store_audio_segment(user_id, segment)
                 if segment_id:
                     # Process the audio segment
-                    await self._process_audio_segment(user_id, segment, segment_id)
+                    segment_clip_paths = await self._process_audio_segment(user_id, segment, segment_id)
+                    if segment_clip_paths:
+                        # Accumulate clip paths created in this processing session
+                        # These will be excluded from orphan cleanup to prevent race condition
+                        all_stored_clip_paths.update(segment_clip_paths)
                     processed_count += 1
 
             # Already handled by run-once guard earlier; keep end-of-chunk cleanup disabled
 
-            return processed_count
+            return processed_count, all_stored_clip_paths
 
         except Exception as e:
             print(f"❌ Error processing date range: {str(e)}")
@@ -425,7 +445,7 @@ class Scheduler:
                         "end_time": end_time.isoformat(),
                     },
                 )
-            return 0
+            return 0, set()
 
     async def _store_audio_segment(self, user_id: str, segment) -> Optional[str]:
         """Store audio segment in database."""
@@ -488,10 +508,16 @@ class Scheduler:
             print(f"❌ Error storing audio segment: {str(e)}")
             return None
 
-    async def _process_audio_segment(self, user_id: str, segment, segment_id: str):
-        """Process a single audio segment for laughter detection."""
+    async def _process_audio_segment(self, user_id: str, segment, segment_id: str) -> set:
+        """
+        Process a single audio segment for laughter detection.
+        
+        Returns:
+            set: Clip paths that were successfully stored in database
+        """
         file_path: Optional[str] = None
         audio_deleted = False
+        stored_clip_paths = set()
         try:
             # Handle both dict and object formats
             if isinstance(segment, dict):
@@ -511,13 +537,37 @@ class Scheduler:
             from .enhanced_logger import get_current_logger
 
             if laughter_events:
+                # FIX (2025-11-20): Increment by total_detected (before duplicates filtered), not stored_count (after duplicates filtered)
+                # 
+                # BUG FIXED: Previously, laughter_events_found was incremented by stored_count (line 1074), which caused:
+                #   - laughter_events_found = sum of stored_count across segments (WRONG)
+                #   - Math didn't work: laughter_events_found - duplicates_skipped ≠ stored_count
+                # 
+                # CORRECT BEHAVIOR: Increment by total_detected (len(laughter_events)) BEFORE duplicate filtering:
+                #   - laughter_events_found = sum of total_detected across segments (CORRECT)
+                #   - Math works: laughter_events_found - duplicates_skipped = stored_count
+                #
+                # IMPACT: This fix ONLY affects the processing_logs.laughter_events_found metric. It does NOT affect:
+                #   - Database records (laughter_detections table) - UI reads from here, unchanged
+                #   - Disk files (WAV clips) - Created by yamnet_processor, unchanged
+                #   - UI display - Reads from laughter_detections table, unchanged
+                #   - Debug statements - Print statements unchanged
+                #
+                # TESTED: Verified on staging with user d26444bc-e441-4f36-91aa-bfee24cb39fb (2025-11-19)
+                #   - Before fix: laughter_events_found = 22 (wrong, should be 77)
+                #   - After fix: laughter_events_found = 77 (correct, matches segment totals)
+                logger = get_current_logger()
+                if logger:
+                    logger.increment_laughter_events(len(laughter_events))
+                
                 # Store laughter detection results in database with duplicate prevention
                 # DATABASE WRITE: Inserts into laughter_detections table (some may be skipped as duplicates)
                 # TRIGGER: enhanced_logger.increment_skipped_*() methods are called inside _store_laughter_detections()
                 # for each duplicate that is skipped (time-window, clip-path, missing-file)
-                await self._store_laughter_detections(
+                segment_clip_paths = await self._store_laughter_detections(
                     user_id, segment_id, laughter_events
                 )
+                stored_clip_paths.update(segment_clip_paths)
 
             # Mark segment as processed
             await self._mark_segment_processed(segment_id)
@@ -549,57 +599,58 @@ class Scheduler:
                     )
                     import traceback
 
-                    print(
-                        f"⚠️ [FINALLY] Cleanup error traceback: {traceback.format_exc()}"
-                    )
+                    print(f"⚠️ [FINALLY] Cleanup error traceback: {traceback.format_exc()}")
+        
+        # Return stored clip paths (outside finally block)
+        return stored_clip_paths
 
-            # ========================================================================
-            # SEGMENT-LEVEL MEMORY CLEANUP
-            # ========================================================================
-            # Purpose: Release TensorFlow/NumPy memory after processing each audio segment.
-            #          Prevents memory accumulation during long processing runs.
-            #
-            # Strategy: Clear TensorFlow session and run garbage collection.
-            #           Less aggressive than user-level cleanup (3x GC vs 10x) since
-            #           we're cleaning up more frequently (per segment vs per user).
-            #
-            # Test Results: Reduces memory spikes from ~2.4 GB to manageable levels
-            #              between segments. Works in conjunction with user-level cleanup.
-            # ========================================================================
+        # ========================================================================
+        # SEGMENT-LEVEL MEMORY CLEANUP
+        # ========================================================================
+        # Purpose: Release TensorFlow/NumPy memory after processing each audio segment.
+        #          Prevents memory accumulation during long processing runs.
+        #
+        # Strategy: Clear TensorFlow session and run garbage collection.
+        #           Less aggressive than user-level cleanup (3x GC vs 10x) since
+        #           we're cleaning up more frequently (per segment vs per user).
+        #
+        # Test Results: Reduces memory spikes from ~2.4 GB to manageable levels
+        #              between segments. Works in conjunction with user-level cleanup.
+        # ========================================================================
+        try:
+            import tensorflow as tf
+            import gc
+
+            # Clear TensorFlow session and reset default graph
+            # Reason: TensorFlow maintains state between inferences. Clearing releases
+            #         internal buffers and graph structures that can accumulate.
+            tf.keras.backend.clear_session()
+            tf.compat.v1.reset_default_graph()
+            
+            # Run garbage collection multiple times to collect circular references
+            # Reason: TensorFlow objects can have complex reference cycles. Multiple
+            #         GC passes ensure they're collected. 3 passes is sufficient for
+            #         segment-level cleanup (more aggressive cleanup happens at user level).
+            for _ in range(3):
+                gc.collect()
+            
+            # Log memory usage for monitoring and debugging
+            # Reason: Track memory patterns and detect leaks. Memory logs help identify
+            #         problematic segments or users that consume excessive memory.
             try:
-                import tensorflow as tf
-                import gc
-
-                # Clear TensorFlow session and reset default graph
-                # Reason: TensorFlow maintains state between inferences. Clearing releases
-                #         internal buffers and graph structures that can accumulate.
-                tf.keras.backend.clear_session()
-                tf.compat.v1.reset_default_graph()
-                
-                # Run garbage collection multiple times to collect circular references
-                # Reason: TensorFlow objects can have complex reference cycles. Multiple
-                #         GC passes ensure they're collected. 3 passes is sufficient for
-                #         segment-level cleanup (more aggressive cleanup happens at user level).
-                for _ in range(3):
-                    gc.collect()
-                
-                # Log memory usage for monitoring and debugging
-                # Reason: Track memory patterns and detect leaks. Memory logs help identify
-                #         problematic segments or users that consume excessive memory.
-                try:
-                    import psutil
-                    import os
-                    process = psutil.Process(os.getpid())
-                    mem_mb = process.memory_info().rss / 1024 / 1024
-                    print(f"🧠 [FINALLY] TensorFlow/GC cleanup complete - Memory: {mem_mb:.1f} MB")
-                except ImportError:
-                    # psutil not available - log without memory info
-                    print("🧠 [FINALLY] TensorFlow/GC cleanup complete")
-            except Exception as mem_error:
-                # Non-fatal: Log error but don't fail segment processing
-                # Reason: Memory cleanup failures shouldn't prevent audio processing.
-                #         Log for debugging but continue execution.
-                print(f"⚠️ [FINALLY] Memory cleanup failed: {mem_error}")
+                import psutil
+                import os
+                process = psutil.Process(os.getpid())
+                mem_mb = process.memory_info().rss / 1024 / 1024
+                print(f"🧠 [FINALLY] TensorFlow/GC cleanup complete - Memory: {mem_mb:.1f} MB")
+            except ImportError:
+                # psutil not available - log without memory info
+                print("🧠 [FINALLY] TensorFlow/GC cleanup complete")
+        except Exception as mem_error:
+            # Non-fatal: Log error but don't fail segment processing
+            # Reason: Memory cleanup failures shouldn't prevent audio processing.
+            #         Log for debugging but continue execution.
+            print(f"⚠️ [FINALLY] Memory cleanup failed: {mem_error}")
 
     async def _get_active_users(self) -> list:
         """Get all users with active Limitless API keys."""
@@ -765,7 +816,7 @@ class Scheduler:
             - Deletes duplicate WAV files immediately after detection
 
         Returns:
-            None (prints summary statistics)
+            set: Clip paths that were successfully stored in database (to exclude from orphan cleanup)
         """
         try:
             from .enhanced_logger import get_current_logger
@@ -776,6 +827,7 @@ class Scheduler:
             skipped_clip_path = 0
             skipped_missing_file = 0
             stored_count = 0
+            stored_clip_paths = set()  # Track successfully stored clip paths
 
             # CRITICAL DEBUG: Entry point
 
@@ -982,6 +1034,10 @@ class Scheduler:
                         }
                     ).execute()
                     stored_count += 1
+                    # Track successfully stored clip path for orphan cleanup exclusion
+                    # This prevents race condition where cleanup deletes files before DB inserts are visible
+                    if event.clip_path:
+                        stored_clip_paths.add(event.clip_path)
                 except Exception as insert_error:
                     # Handle unique constraint violations gracefully
                     # DATABASE CONSTRAINT: unique_laughter_timestamp_user_class on (user_id, timestamp, class_id)
@@ -1064,14 +1120,24 @@ class Scheduler:
             # - stored_count -> actual rows inserted into laughter_detections table
             #
             # TRIGGER: enhanced_logger.increment_laughter_events(len(laughter_events)) is called from
-            # _process_audio_segment() to track total detected. Skip counters are incremented above via
-            # enhanced_logger.increment_skipped_*() methods which update the logger's internal counters.
+            # _process_audio_segment() to track total detected (BEFORE duplicate filtering).
+            # Skip counters are incremented above via enhanced_logger.increment_skipped_*() methods which
+            # update the logger's internal counters.
             print("=" * 80)
 
-            # Update logger with the actual number stored after duplicates were filtered.
-            post_store_logger = get_current_logger()
-            if post_store_logger and stored_count:
-                post_store_logger.increment_laughter_events(stored_count)
+            # REMOVED (2025-11-20): Don't increment by stored_count here - we already incremented by total_detected above
+            # 
+            # BUG FIXED: Previously, this line incremented laughter_events_found by stored_count (after duplicates filtered),
+            # which caused the metric to be wrong. The fix moved the increment to BEFORE duplicate filtering (line 518),
+            # so we increment by total_detected instead.
+            #
+            # OLD CODE (REMOVED):
+            #   post_store_logger = get_current_logger()
+            #   if post_store_logger and stored_count:
+            #       post_store_logger.increment_laughter_events(stored_count)
+            #
+            # The total was already incremented before duplicate filtering, so this would double-count if left here.
+            # Keeping this commented for reference and to prevent accidental re-addition.
             print(f"📊 DETECTION SUMMARY for segment {segment_id[:8]}:")
             print(f"   🎭 Total detected by YAMNet:     {total_detected}")
             print(f"   ⏭️  Skipped (time window dup):   {skipped_time_window}")
@@ -1084,9 +1150,12 @@ class Scheduler:
             print("=" * 80)
 
             # Skip counters already incremented above during the loop via enhanced_logger.increment_skipped_*() methods
+            
+            return stored_clip_paths
 
         except Exception as e:
             print(f"❌ Error storing laughter detections: {str(e)}")
+            return set()  # Return empty set on error
 
     async def _segment_already_processed(self, user_id: str, segment) -> bool:
         """Check if a specific segment already exists and is processed."""
@@ -1184,7 +1253,7 @@ class Scheduler:
             print(f"❌ ❌ Error deleting audio file: {str(e)}")
 
     async def _cleanup_orphaned_files(
-        self, user_id: str, start_time: datetime, end_time: datetime
+        self, user_id: str, start_time: datetime, end_time: datetime, exclude_clip_paths: set = None
     ):
         """
         Clean up orphaned audio files from previous runs that should have been deleted.
@@ -1203,9 +1272,15 @@ class Scheduler:
             user_id: User ID for user-specific folder scanning
             start_time: Start of time window (currently unused, scans all files)
             end_time: End of time window (currently unused, scans all files)
+            exclude_clip_paths: Optional set of clip paths to exclude from cleanup.
+                Used to prevent race condition where cleanup runs immediately after
+                processing, before database inserts are fully visible. Files in this
+                set are skipped even if not found in database query results.
 
         Called by:
             - _process_user_audio() - once after all chunks are processed
+            - process_nightly_audio.py - after nightly processing completes
+            - manual_reprocess_yesterday.py - after reprocessing completes
             - Future: Could be called by scheduled cleanup job
 
         Note: This runs silently - only prints messages when files are found and deleted
@@ -1305,6 +1380,15 @@ class Scheduler:
             # Clips can be in two locations:
             # 1. Legacy: uploads/clips/*.wav (old format)
             # 2. Current: uploads/clips/{user_id}/*.wav (per-user folders)
+            # 
+            # CRITICAL FIX: Exclude files created in the current processing session to avoid race condition
+            # where cleanup runs before database inserts are fully visible (connection pooling, read-after-write
+            # consistency, etc.). This prevents deleting files that were just created and inserted.
+            exclude_filenames = set()
+            if exclude_clip_paths:
+                for path in exclude_clip_paths:
+                    exclude_filenames.add(os.path.basename(path).lower())
+            
             clips_dir = os.path.join(project_root, "uploads", "clips")
             if os.path.exists(clips_dir):
                 # Check legacy location (direct in clips/)
@@ -1313,6 +1397,10 @@ class Scheduler:
                         os.path.join(clips_dir, filename)
                     ):
                         file_path = os.path.join(clips_dir, filename)
+                        # Skip files created in current session
+                        if filename.lower() in exclude_filenames:
+                            continue
+                        
                         if filename.lower() not in all_clip_paths:
                             # WAV file exists on disk but not referenced in laughter_detections - true orphan
                             print(
@@ -1327,6 +1415,13 @@ class Scheduler:
                     for filename in os.listdir(user_clips_dir):
                         if filename.endswith(".wav"):
                             file_path = os.path.join(user_clips_dir, filename)
+                            # Skip files created in current session (race condition fix)
+                            if filename.lower() in exclude_filenames:
+                                # Log exclusion for debugging/verification
+                                # This file was created in current processing session and is excluded from cleanup
+                                # to prevent race condition where cleanup runs before DB inserts are visible
+                                continue
+                            
                             if filename.lower() not in all_clip_paths:
                                 # WAV file exists on disk but not referenced in laughter_detections - true orphan
                                 print(

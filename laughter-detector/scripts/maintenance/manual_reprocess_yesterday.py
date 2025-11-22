@@ -28,14 +28,15 @@ import pytz
 import logging
 from typing import Optional
 
+# Add project root to path (where src/ directory is located)
+project_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(project_root))
+
 from src.services.limitless_keys import (
     LimitlessKeyError,
     fetch_decrypted_limitless_key,
 )
 from src.services.supabase_client import get_service_role_client
-
-# Add src to path
-sys.path.insert(0, os.path.dirname(__file__))
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -68,12 +69,14 @@ async def clear_database_records(
     print("🗑️  Clearing database records...")
 
     # Delete laughter detections first (due to foreign key constraints)
+    # FIX: Use .lt() instead of .lte() for end_time to exclude records exactly at boundary
+    # end_time is the START of the next day, so we want [start_time, end_time) (exclusive end)
     laughter_result = (
         supabase.table("laughter_detections")
         .select("id")
         .eq("user_id", user_id)
         .gte("timestamp", start_time.isoformat())
-        .lte("timestamp", end_time.isoformat())
+        .lt("timestamp", end_time.isoformat())
         .execute()
     )
     laughter_count = len(laughter_result.data) if laughter_result.data else 0
@@ -184,12 +187,13 @@ async def clear_disk_files(
     # This ensures we know exactly which files to delete, even if they're in user-specific folders
 
     # 1. Get clip_paths from laughter_detections table
+    # FIX: Use .lt() instead of .lte() for end_time to match clear_database_records()
     detections_result = (
         supabase.table("laughter_detections")
         .select("clip_path")
         .eq("user_id", user_id)
         .gte("timestamp", start_time.isoformat())
-        .lte("timestamp", end_time.isoformat())
+        .lt("timestamp", end_time.isoformat())
         .execute()
     )
 
@@ -219,12 +223,20 @@ async def clear_disk_files(
 
     # 3. Delete WAV clip files using database paths
     # Resolve relative paths to absolute
-    project_root = os.path.dirname(os.path.abspath(__file__))
+    # CRITICAL FIX: Handle both relative and absolute paths correctly
+    # - Absolute paths (VPS): Use as-is (e.g., /var/lib/giggles/uploads/clips/...)
+    # - Relative paths (MacBook): Resolve from project root (e.g., ./uploads/clips/...)
+    # Match scheduler.py path normalization: lstrip("./") then join with project root
+    script_project_root = Path(__file__).resolve().parent.parent.parent
     for clip_path in clip_paths:
         if clip_path:
             # Resolve relative paths to absolute
             if not os.path.isabs(clip_path):
-                clip_path = os.path.join(project_root, clip_path)
+                # Relative path - resolve from project root
+                # Database stores paths like: ./uploads/clips/{user_id}/filename.wav
+                # Match scheduler.py normalization: lstrip("./") then join
+                normalized_path = clip_path.lstrip("./")
+                clip_path = os.path.join(str(script_project_root), normalized_path)
 
             if os.path.exists(clip_path):
                 try:
@@ -253,11 +265,16 @@ async def clear_disk_files(
 
     # 4. Delete OGG audio files using database paths
     # Resolve relative paths to absolute
+    # Use same project_root as above (already calculated)
+    # Note: audio_segments.file_path may be encrypted, but we handle plaintext paths here
     for audio_path in audio_paths:
         if audio_path:
             # Resolve relative paths to absolute
             if not os.path.isabs(audio_path):
-                audio_path = os.path.join(project_root, audio_path)
+                # Relative path - resolve from project root
+                # Match scheduler.py normalization: lstrip("./") then join
+                normalized_path = audio_path.lstrip("./")
+                audio_path = os.path.join(str(script_project_root), normalized_path)
 
             if os.path.exists(audio_path):
                 try:
@@ -364,7 +381,11 @@ async def reprocess_date_range(
         sys.exit(1)
 
     # Step 4: Reprocess using scheduler
-    from src.services.scheduler import scheduler, generate_time_chunks
+    from src.services.scheduler import (
+        scheduler,
+        generate_time_chunks,
+        DEFAULT_CHUNK_MINUTES,
+    )
     from src.services.enhanced_logger import get_enhanced_logger
 
     # CRITICAL FIX: Create separate logs for each day in the date range
@@ -386,9 +407,15 @@ async def reprocess_date_range(
 
         chunk_count = 0
         total_segments = 0
+        all_stored_clip_paths = set()  # Track clip paths created in this reprocessing session
 
         for chunk_count, (current_time, chunk_end) in enumerate(
-            generate_time_chunks(start_utc, end_utc, chunk_minutes=30), start=1
+            generate_time_chunks(
+                start_utc,
+                end_utc,
+                chunk_minutes=DEFAULT_CHUNK_MINUTES,
+            ),
+            start=1,
         ):
             # Check if we've crossed into a new day - create new logger if needed
             chunk_date = current_time.date()
@@ -413,10 +440,13 @@ async def reprocess_date_range(
             )
 
             # Process this chunk
-            processed = await scheduler._process_date_range(
+            processed, chunk_clip_paths = await scheduler._process_date_range(
                 user_id, api_key, current_time, chunk_end
             )
             total_segments += processed
+            # Accumulate clip paths created in this reprocessing session
+            # These will be excluded from orphan cleanup to prevent race condition
+            all_stored_clip_paths.update(chunk_clip_paths)
 
             logger.info(f"  ✅ Processed {processed} segment(s) in this chunk")
 
@@ -448,6 +478,19 @@ async def reprocess_date_range(
 
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        # ALWAYS run orphan cleanup, even if processing failed
+        # This ensures no orphaned files remain from crashed/failed processing
+        try:
+            from datetime import timedelta
+            now_utc = datetime.utcnow()
+            start_window = now_utc - timedelta(days=2)
+            # Exclude clip paths created during reprocessing to prevent race condition
+            session_clip_paths = all_stored_clip_paths if 'all_stored_clip_paths' in locals() else set()
+            await scheduler._cleanup_orphaned_files(user_id, start_window, now_utc, exclude_clip_paths=session_clip_paths)
+            logger.info("🧹 Orphan cleanup completed")
+        except Exception as cleanup_err:
+            logger.warning(f"⚠️ Orphan cleanup failed (non-fatal): {str(cleanup_err)}")
 
 
 def main():

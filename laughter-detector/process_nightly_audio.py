@@ -384,6 +384,7 @@ class NightlyAudioProcessor:
 
             chunk_count = 0
             total_segments_processed = 0
+            all_stored_clip_paths = set()  # Track clip paths created in this processing session
 
             for chunk_count, (chunk_start, chunk_end) in enumerate(
                 generate_time_chunks(
@@ -396,10 +397,13 @@ class NightlyAudioProcessor:
                 print(
                     f"📦 Processing chunk {chunk_count}: {chunk_start.strftime('%H:%M')} UTC to {chunk_end.strftime('%H:%M')} UTC"
                 )
-                segments_processed = await self.scheduler._process_date_range(
+                segments_processed, chunk_clip_paths = await self.scheduler._process_date_range(
                     user_id, api_key, chunk_start, chunk_end
                 )
                 total_segments_processed += segments_processed
+                # Accumulate clip paths created in this processing session
+                # These will be excluded from orphan cleanup to prevent race condition
+                all_stored_clip_paths.update(chunk_clip_paths)
 
             # Save processing log
             await enhanced_logger.save_to_database(
@@ -424,8 +428,12 @@ class NightlyAudioProcessor:
             try:
                 now_utc = datetime.utcnow()
                 start_window = now_utc - timedelta(days=2)
+                # Get clip paths created in this session to exclude from cleanup
+                # CRITICAL FIX: Prevents race condition where cleanup deletes files
+                # that were just created but aren't visible in database query yet
+                session_clip_paths = all_stored_clip_paths if 'all_stored_clip_paths' in locals() else set()
                 await self.scheduler._cleanup_orphaned_files(
-                    user_id, start_window, now_utc
+                    user_id, start_window, now_utc, exclude_clip_paths=session_clip_paths
                 )
                 print("🧹 Orphan cleanup completed")
             except Exception as cleanup_err:
