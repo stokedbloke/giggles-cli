@@ -445,6 +445,64 @@ class YAMNetProcessor:
             # Save clip
             sf.write(clip_path, clip_data, sample_rate)
 
+            # CRITICAL GUARD (2025-11-23): Verify file was actually created before returning path
+            # This prevents storing paths in DB for files that don't exist
+            if not os.path.exists(clip_path):
+                logger.error(f"File creation failed: {clip_path} does not exist after sf.write()")
+                return None
+
+            # CRITICAL FIX (2025-11-23): Normalize path to always be relative (starting with ./)
+            # 
+            # PROBLEM:
+            # - On production, settings.upload_dir might be absolute (/var/lib/giggles/uploads)
+            # - This causes absolute paths to be stored in DB (e.g., /var/lib/giggles/uploads/clips/...)
+            # - But the endpoint expects relative paths (e.g., ./uploads/clips/...)
+            # - Result: "Audio file not found" errors in production UI
+            # 
+            # SOLUTION:
+            # - Always convert absolute paths to relative paths from project root
+            # - Ensure path starts with ./ for consistency
+            # - This works regardless of how settings.upload_dir is configured
+            # 
+            # IMPACT:
+            # - Fixes "Audio file not available" errors in production
+            # - Ensures path resolution works in all environments
+            # - Prevents path-related bugs when deploying to different servers
+            original_clip_path = clip_path  # Keep original for error logging
+            try:
+                if os.path.isabs(clip_path):
+                    # Convert absolute path to relative
+                    project_root = os.path.dirname(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    )  # Go up to laughter-detector/
+                    clip_path = os.path.relpath(clip_path, project_root)
+                
+                # Ensure path starts with ./ for consistency
+                if not clip_path.startswith("./"):
+                    clip_path = "./" + clip_path
+            except Exception as path_err:
+                # If path normalization fails, log error but still return original path
+                # This is better than returning None and losing the detection
+                logger.warning(f"Path normalization failed for {original_clip_path}: {str(path_err)}. Using original path.")
+                clip_path = original_clip_path
+
+            # FINAL GUARD: Verify file still exists at normalized path (if different from original)
+            # If we normalized to relative, verify it resolves correctly
+            if clip_path != original_clip_path:
+                # Resolve normalized path back to absolute to verify
+                if not os.path.isabs(clip_path):
+                    project_root = os.path.dirname(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    )
+                    resolved_path = os.path.normpath(os.path.join(project_root, clip_path.lstrip("./")))
+                else:
+                    resolved_path = clip_path
+                
+                if not os.path.exists(resolved_path):
+                    logger.error(f"Normalized path does not resolve to existing file: {clip_path} -> {resolved_path}")
+                    # Fall back to original path if normalization broke the path
+                    clip_path = original_clip_path
+
             # Return plaintext clip path (no encryption needed)
             return clip_path
 

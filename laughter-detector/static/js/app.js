@@ -163,15 +163,15 @@ class LaughterDetectorApp {
             try {
                 // Validate token by fetching current user info from backend
                 const response = await this.makeRequest('/auth/me', 'GET');
-                console.log('✅ Auth response:', response);
-                console.log('✅ /auth/me returned full response:', JSON.stringify(response, null, 2));
+                // SECURITY: Don't log full user object (contains email, user_id, etc.)
+                // Only log non-sensitive info for debugging
+                console.log('✅ Auth check successful');
                 
                 // Store user data and timezone
                 this.currentUser = response.user;
                 this.userTimezone = response.user?.timezone || 'UTC';
                 
                 console.log('✅ User timezone set to:', this.userTimezone);
-                console.log('✅ Extracted from response.user?.timezone:', response.user?.timezone);
                 
                 // Migration: If user has UTC timezone, attempt to update with detected timezone
                 if (this.userTimezone === 'UTC' && this.currentUser) {
@@ -739,22 +739,15 @@ class LaughterDetectorApp {
         const timezone = this.userTimezone || this.detectTimezone();
         const time = this.formatTimestampToTimezone(detection.timestamp, timezone);
         
-        // Fetch audio file with authentication and create blob URL for playback
-        const audioUrl = await this.getAudioUrl(detection.id);
+        // Create abort controller for this row's audio fetch (allows cancellation if row is removed)
+        const abortController = new AbortController();
+        row._abortController = abortController; // Store for cleanup
         
-        // Only show audio player if we have a valid URL (file exists)
-        const audioHtml = audioUrl 
-            ? `<audio controls preload="metadata">
-                <source src="${audioUrl}" type="audio/wav">
-                Your browser does not support the audio element.
-               </audio>`
-            : `<span class="no-audio">Audio file not available</span>`;
-        
-        // Build row HTML with all detection data and interactive elements
+        // Show loading state initially
         row.innerHTML = `
             <td>
                 <div class="audio-clip">
-                    ${audioHtml}
+                    <span class="loading-audio">Loading...</span>
                     <span>${time}</span>
                 </div>
             </td>
@@ -777,6 +770,70 @@ class LaughterDetectorApp {
             </td>
         `;
         
+        // LAZY LOADING (2025-11-24): Fetch audio file asynchronously (non-blocking for row creation)
+        // 
+        // WHY THIS IS NEEDED:
+        // - Previously, all audio clips were fetched synchronously when rows were created
+        // - For days with 300+ detections, this meant 300+ simultaneous fetch requests
+        // - Browser throttling caused requests to be aborted or fail
+        // - Result: ERR_CONTENT_LENGTH_MISMATCH errors and "Audio file not available" messages
+        // 
+        // SOLUTION:
+        // - Rows render immediately with "Loading..." state
+        // - Audio is fetched asynchronously in background
+        // - AbortController cancels fetches for rows removed from DOM
+        // - Browser can throttle requests naturally without overwhelming the network
+        // 
+        // IMPACT:
+        // - Fixes ERR_CONTENT_LENGTH_MISMATCH errors
+        // - Prevents browser from being overwhelmed by simultaneous requests
+        // - Better user experience (rows appear immediately, audio loads progressively)
+        // - Reduces network congestion and improves reliability
+        this.getAudioUrl(detection.id, abortController.signal).then(audioUrl => {
+            // Only update if row still exists and hasn't been removed
+            if (row.parentNode && !abortController.signal.aborted) {
+                const audioClipDiv = row.querySelector('.audio-clip');
+                if (audioClipDiv) {
+                    const loadingSpan = audioClipDiv.querySelector('.loading-audio');
+                    if (loadingSpan) {
+                        loadingSpan.remove();
+                    }
+                    
+                    // Only show audio player if we have a valid URL (file exists)
+                    if (audioUrl) {
+                        const audio = document.createElement('audio');
+                        audio.controls = true;
+                        audio.preload = 'metadata';
+                        const source = document.createElement('source');
+                        source.src = audioUrl;
+                        source.type = 'audio/wav';
+                        audio.appendChild(source);
+                        audioClipDiv.insertBefore(audio, audioClipDiv.querySelector('span'));
+                    } else {
+                        const noAudioSpan = document.createElement('span');
+                        noAudioSpan.className = 'no-audio';
+                        noAudioSpan.textContent = 'Audio file not available';
+                        audioClipDiv.insertBefore(noAudioSpan, audioClipDiv.querySelector('span'));
+                    }
+                }
+            }
+        }).catch(error => {
+            // Silently handle errors (already logged in getAudioUrl)
+            if (row.parentNode && !abortController.signal.aborted) {
+                const audioClipDiv = row.querySelector('.audio-clip');
+                if (audioClipDiv) {
+                    const loadingSpan = audioClipDiv.querySelector('.loading-audio');
+                    if (loadingSpan) {
+                        loadingSpan.remove();
+                        const noAudioSpan = document.createElement('span');
+                        noAudioSpan.className = 'no-audio';
+                        noAudioSpan.textContent = 'Audio file not available';
+                        audioClipDiv.insertBefore(noAudioSpan, audioClipDiv.querySelector('span'));
+                    }
+                }
+            }
+        });
+        
         return row;
     }
     
@@ -784,15 +841,17 @@ class LaughterDetectorApp {
      * Fetch audio file from backend and create a blob URL for HTML5 audio player.
      * Returns null if file doesn't exist (404) or fetch fails. Uses authentication token.
      * @param {string} clipId - UUID of the laughter detection
+     * @param {AbortSignal} signal - Optional abort signal to cancel the request
      * @returns {string|null} Blob URL for audio playback, or null if unavailable
      */
-    async getAudioUrl(clipId) {
+    async getAudioUrl(clipId, signal = null) {
         try {
             // Fetch audio file with authentication
             const response = await fetch(`${this.apiBase}/audio-clips/${clipId}`, {
                 headers: {
                     'Authorization': `Bearer ${this.authToken}`
-                }
+                },
+                signal: signal // Allow cancellation if row is removed
             });
             
             if (!response.ok) {
@@ -808,7 +867,13 @@ class LaughterDetectorApp {
             const blob = await response.blob();
             return URL.createObjectURL(blob); // Creates temporary URL like blob:http://localhost:8000/abc123
         } catch (error) {
-            console.error('Error fetching audio:', error);
+            // Don't log abort errors (expected when row is removed)
+            if (error.name !== 'AbortError') {
+                // SECURITY: Don't log full error objects (may contain sensitive paths)
+                // Only log error type and status code
+                const errorMsg = error.message || 'Unknown error';
+                console.warn(`Audio fetch failed for clip ${clipId.substring(0, 8)}...: ${errorMsg}`);
+            }
             return null; // Return null to indicate no audio available (not an error state)
         }
     }

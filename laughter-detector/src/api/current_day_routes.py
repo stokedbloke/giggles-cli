@@ -41,36 +41,65 @@ async def process_current_day(
     credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
 ):
     """
-    Process current day audio directly without scheduler.
+    Process current day audio with enhanced logging.
+    
+    ENHANCED LOGGING (2025-11-20): Now uses enhanced_logger to create processing_logs entries,
+    matching the behavior of cron jobs and reprocessing. This provides:
+    - Audit trail of when/why processing occurred
+    - Statistics: laughter_events_found, duplicates_skipped, audio_files_downloaded
+    - Consistent logging across all processing paths
+    
+    This endpoint processes already-downloaded audio segments (unlike cron which downloads new audio).
+    It uses scheduler._store_laughter_detections() for duplicate prevention and consistent storage.
     """
     try:
         user_id = user["id"]
-        print(f"�� Processing current day audio for user {user_id}")
+        print(f"🔄 Processing current day audio for user {user_id}")
+        
+        # ENHANCED LOGGING: Create logger for this processing run
+        from ..services.enhanced_logger import get_enhanced_logger
+        from datetime import date
+        
+        today = date.today()
+        enhanced_logger = get_enhanced_logger(user_id, "manual", process_date=today)
         
         # Get unprocessed audio segments for today
-        today = datetime.now(pytz.UTC).date()
-        tomorrow = today + timedelta(days=1)
+        tomorrow_date = today + timedelta(days=1)
+        tomorrow = datetime.combine(tomorrow_date, datetime.min.time()).replace(tzinfo=pytz.UTC)
+        today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=pytz.UTC)
         
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
         
         # Get unprocessed segments for today (RLS will ensure user can only access their own)
-        segments = supabase.table("audio_segments").select("*").eq("processed", False).gte("start_time", today.isoformat()).lt("start_time", tomorrow.isoformat()).execute()
+        segments = supabase.table("audio_segments").select("*").eq("processed", False).gte("start_time", today_start.isoformat()).lt("start_time", tomorrow.isoformat()).execute()
         
         if not segments.data:
             print("✅ No unprocessed segments for today")
+            # Save log even if no processing occurred
+            await enhanced_logger.save_to_database(
+                "completed", "No unprocessed segments for today"
+            )
             return {"status": "success", "message": "No unprocessed segments for today", "processed": 0}
         
         print(f"📊 Found {len(segments.data)} unprocessed segments for today")
         
+        # Track metrics
         processed_count = 0
+        total_laughter_events = 0
+        
+        # Use scheduler for storing detections (handles duplicates and logging)
+        from ..services.scheduler import scheduler
         
         for segment in segments.data:
             try:
                 segment_id = segment["id"]
                 file_path = segment["file_path"]
                 
-                print(f"�� Processing segment {segment_id}")
+                print(f"🔄 Processing segment {segment_id}")
+                
+                # Track audio file (even though it's already downloaded)
+                enhanced_logger.increment_audio_files()
                 
                 # Decrypt file path
                 from ..auth.encryption import encryption_service
@@ -78,6 +107,7 @@ async def process_current_day(
                 
                 if not os.path.exists(decrypted_path):
                     print(f"⚠️  Audio file not found: {decrypted_path}")
+                    enhanced_logger.add_error("missing_file", f"Audio file not found: {decrypted_path}")
                     continue
                 
                 # Run YAMNet processing
@@ -86,33 +116,17 @@ async def process_current_day(
                 
                 if laughter_events:
                     print(f"🎭 Found {len(laughter_events)} laughter events")
+                    total_laughter_events += len(laughter_events)
                     
-                    # Store laughter detections
-                    for event in laughter_events:
-                        try:
-                            # Calculate proper timestamp
-                            segment_start = datetime.fromisoformat(segment["start_time"].replace('Z', '+00:00'))
-                            event_datetime = segment_start + timedelta(seconds=float(event.timestamp))
-                            # Truncate microseconds to avoid PostgreSQL issues
-                            event_datetime = event_datetime.replace(microsecond=0)
-                            
-                            # Store detection (RLS will ensure user can only insert their own)
-                            supabase.table("laughter_detections").insert({
-                                "user_id": user_id,
-                                "audio_segment_id": segment_id,
-                                "timestamp": event_datetime.isoformat(),
-                                "probability": event.probability,
-                                "clip_path": event.clip_path,
-                                "class_id": getattr(event, 'class_id', None),
-                                "class_name": getattr(event, 'class_name', None),
-                                "notes": "Current day processing"
-                            }).execute()
-                            
-                            print(f"✅ Stored laughter detection: {event_datetime} (prob: {event.probability:.3f})")
-                            
-                        except Exception as e:
-                            print(f"❌ Error storing laughter detection: {str(e)}")
-                            continue
+                    # ENHANCED LOGGING: Track total detected (before duplicates filtered)
+                    enhanced_logger.increment_laughter_events(len(laughter_events))
+                    
+                    # Use scheduler._store_laughter_detections() for duplicate prevention and consistent storage
+                    # scheduler handles float timestamps by looking up segment start time from database
+                    stored_clip_paths = await scheduler._store_laughter_detections(
+                        user_id, segment_id, laughter_events
+                    )
+                    print(f"✅ Stored {len(stored_clip_paths)} laughter detection(s) (duplicates skipped)")
                 else:
                     print("😴 No laughter detected in this segment")
                 
@@ -123,13 +137,29 @@ async def process_current_day(
                 
             except Exception as e:
                 print(f"❌ Error processing segment {segment_id}: {str(e)}")
+                enhanced_logger.add_error("segment_processing_failed", f"Segment {segment_id}: {str(e)}")
                 continue
         
+        # Save processing log to database
+        await enhanced_logger.save_to_database(
+            "completed", f"Processed {processed_count} segments for current day"
+        )
+        enhanced_logger.log_processing_summary()
+        
         print(f"🎉 Processed {processed_count} segments for current day")
-        return {"status": "success", "message": f"Processed {processed_count} segments", "processed": processed_count}
+        return {
+            "status": "success",
+            "message": f"Processed {processed_count} segments",
+            "processed": processed_count,
+            "laughter_events_found": total_laughter_events,
+        }
         
     except Exception as e:
         print(f"❌ Error in current day processing: {str(e)}")
+        # Save error log if logger exists
+        if 'enhanced_logger' in locals():
+            enhanced_logger.add_error("processing_failed", str(e))
+            await enhanced_logger.save_to_database("failed", f"Processing failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 @router.get("/current-day-status")

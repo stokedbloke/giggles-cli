@@ -31,6 +31,13 @@ import pytz
 # Add the src directory to the path so we can import our modules
 sys.path.append(str(Path(__file__).parent / "src"))
 
+# CRITICAL: Enable httpx patch BEFORE importing supabase
+# This fixes: TypeError: Client.__init__() got an unexpected keyword argument 'proxy'
+# The httpx_patch module patches httpx.Client to accept the legacy 'proxy' argument
+# that Supabase's Python client still uses (httpx >=0.25 removed 'proxy' in favor of 'proxies')
+from src.utils.httpx_patch import enable_proxy_keyword_compat
+enable_proxy_keyword_compat()
+
 from dotenv import load_dotenv
 from supabase import Client
 

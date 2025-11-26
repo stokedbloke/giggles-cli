@@ -40,6 +40,13 @@ scripts_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(scripts_dir))
 
+# CRITICAL: Enable httpx patch BEFORE importing supabase
+# This fixes: TypeError: Client.__init__() got an unexpected keyword argument 'proxy'
+# The httpx_patch module patches httpx.Client to accept the legacy 'proxy' argument
+# that Supabase's Python client still uses (httpx >=0.25 removed 'proxy' in favor of 'proxies')
+from src.utils.httpx_patch import enable_proxy_keyword_compat
+enable_proxy_keyword_compat()
+
 # Load .env BEFORE importing anything that uses settings
 from dotenv import load_dotenv
 load_dotenv(project_root / ".env")

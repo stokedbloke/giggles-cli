@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Iterator, Tuple
 import pytz
 from supabase import Client
+from fastapi import HTTPException, status
 
 from ..config.settings import settings
 from ..services.limitless_api import limitless_api_service
@@ -36,6 +37,18 @@ def _norm_iso(ts: str) -> str:
 
 
 DEFAULT_CHUNK_MINUTES = 30
+VERBOSE_PROCESSING_LOGS = settings.verbose_processing_logs
+
+
+def _verbose_log(message: str) -> None:
+    """
+    Print verbose-only processing logs when enabled.
+
+    Args:
+        message: Text to print.
+    """
+    if VERBOSE_PROCESSING_LOGS:
+        print(message)
 
 
 def generate_time_chunks(
@@ -64,7 +77,13 @@ def generate_time_chunks(
 
 
 class Scheduler:
-    """Service for managing background processing tasks."""
+    """
+    Service for managing background processing tasks.
+    
+    REFACTORING NOTE (2025-11-20): Added reprocess_date_range() method to consolidate
+    reprocessing logic. This allows both API endpoints and CLI scripts to use the same
+    code path, reducing duplication and ensuring consistent behavior.
+    """
 
     def __init__(self):
         """Initialize the scheduler."""
@@ -227,7 +246,7 @@ class Scheduler:
             # Implements requirement: "only retrieve audio after the latest timestamp of audio retrieved"
             # Convert start_of_day to UTC for comparison with DB timestamps
             start_of_day_utc = start_of_day.astimezone(pytz.UTC)
-            print(
+            _verbose_log(
                 f"🔍 Checking for already processed audio today (from {start_of_day_utc.strftime('%Y-%m-%d %H:%M')} UTC / {start_of_day.strftime('%Y-%m-%d %H:%M')} {user.get('timezone', 'UTC')})"
             )
             # Convert now to UTC for API calls (Limitless uses UTC)
@@ -236,13 +255,13 @@ class Scheduler:
             latest_processed = await self._get_latest_processed_timestamp(
                 user_id, start_of_day_utc
             )
-            print(
+            _verbose_log(
                 f"🔍 Latest processed timestamp (UTC): {latest_processed.strftime('%Y-%m-%d %H:%M')}"
             )
 
             # Cap latest_processed at now_utc to handle data from "future" dates due to timezone issues
             if latest_processed > now_utc:
-                print(
+                _verbose_log(
                     f"⚠️ Latest processed ({latest_processed.strftime('%Y-%m-%d %H:%M')}) is in future relative to now ({now_utc.strftime('%Y-%m-%d %H:%M')}), capping to now"
                 )
                 latest_processed = now_utc
@@ -257,13 +276,13 @@ class Scheduler:
                 latest_in_user_tz = latest_processed.astimezone(
                     pytz.timezone(user.get("timezone", "UTC"))
                 )
-                print(
+                _verbose_log(
                     f"⏩ Resuming from last processed time: {latest_in_user_tz.strftime('%Y-%m-%d %H:%M')} {user.get('timezone', 'UTC')} / {latest_processed.strftime('%Y-%m-%d %H:%M')} UTC"
                 )
             else:
-                print(f"🆕 Starting fresh from beginning of day")
+                _verbose_log("🆕 Starting fresh from beginning of day")
 
-            print(
+            _verbose_log(
                 f"📊 Processing range (UTC): {start_time.strftime('%Y-%m-%d %H:%M')} to {now_utc.strftime('%Y-%m-%d %H:%M')}"
             )
 
@@ -287,7 +306,7 @@ class Scheduler:
                 ),
                 start=1,
             ):
-                print(
+                _verbose_log(
                     f"📦 Processing chunk {chunk_index}: {chunk_start.strftime('%H:%M')} UTC to {chunk_end.strftime('%H:%M')} UTC"
                 )
                 segments_processed, chunk_clip_paths = await self._process_date_range(
@@ -424,7 +443,7 @@ class Scheduler:
                         # Accumulate clip paths created in this processing session
                         # These will be excluded from orphan cleanup to prevent race condition
                         all_stored_clip_paths.update(segment_clip_paths)
-                    processed_count += 1
+                        processed_count += 1
 
             # Already handled by run-once guard earlier; keep end-of-chunk cleanup disabled
 
@@ -560,6 +579,18 @@ class Scheduler:
                 if logger:
                     logger.increment_laughter_events(len(laughter_events))
                 
+                # CRITICAL FIX (2025-11-23): Add clip paths to exclude set IMMEDIATELY after file creation
+                # This prevents orphan cleanup from deleting files if an exception occurs between
+                # file creation and DB insert. Previously, paths were only added after successful DB insert,
+                # creating a window where files could be deleted by cleanup.
+                for event in laughter_events:
+                    event_clip_path = getattr(event, "clip_path", None)
+                    if event_clip_path:
+                        # Add ALL clip paths to exclusion set, regardless of file existence
+                        # Files were just created by yamnet_processor._create_audio_clip(), so they should exist.
+                        # We exclude them from cleanup anyway because they're part of the current processing session.
+                        stored_clip_paths.add(event_clip_path)
+                
                 # Store laughter detection results in database with duplicate prevention
                 # DATABASE WRITE: Inserts into laughter_detections table (some may be skipped as duplicates)
                 # TRIGGER: enhanced_logger.increment_skipped_*() methods are called inside _store_laughter_detections()
@@ -567,6 +598,7 @@ class Scheduler:
                 segment_clip_paths = await self._store_laughter_detections(
                     user_id, segment_id, laughter_events
                 )
+                # Update with any additional paths that were successfully stored (redundant but safe)
                 stored_clip_paths.update(segment_clip_paths)
 
             # Mark segment as processed
@@ -577,21 +609,18 @@ class Scheduler:
             audio_deleted = True
 
         except Exception as e:
-            print(f"❌ ❌ Error processing audio segment {segment_id}: {str(e)}")
-            print(f"❌ 🔍 DEBUG: Exception type: {type(e).__name__}")
-            import traceback
-
-            print(f"❌ 🔍 DEBUG: Full traceback: {traceback.format_exc()}")
+            print(f"❌ Error processing audio segment {segment_id}: {str(e)}")
         finally:
             # Always attempt to delete the file even if processing failed early
             if file_path and not audio_deleted:
                 try:
-                    print(
-                        f"🧹 [FINALLY] Starting cleanup for file: {os.path.basename(file_path)}"
+                    import os as os_module  # Use explicit import to avoid shadowing issues
+                    _verbose_log(
+                        f"🧹 [FINALLY] Starting cleanup for file: {os_module.path.basename(file_path)}"
                     )
                     await self._delete_audio_file(file_path, user_id)
-                    print(
-                        f"🗑️ ✅ [FINALLY] Cleaned up audio file: {os.path.basename(file_path)}"
+                    _verbose_log(
+                        f"🗑️ ✅ [FINALLY] Cleaned up audio file: {os_module.path.basename(file_path)}"
                     )
                 except Exception as cleanup_error:
                     print(
@@ -642,10 +671,12 @@ class Scheduler:
                 import os
                 process = psutil.Process(os.getpid())
                 mem_mb = process.memory_info().rss / 1024 / 1024
-                print(f"🧠 [FINALLY] TensorFlow/GC cleanup complete - Memory: {mem_mb:.1f} MB")
+                _verbose_log(
+                    f"🧠 [FINALLY] TensorFlow/GC cleanup complete - Memory: {mem_mb:.1f} MB"
+                )
             except ImportError:
                 # psutil not available - log without memory info
-                print("🧠 [FINALLY] TensorFlow/GC cleanup complete")
+                _verbose_log("🧠 [FINALLY] TensorFlow/GC cleanup complete")
         except Exception as mem_error:
             # Non-fatal: Log error but don't fail segment processing
             # Reason: Memory cleanup failures shouldn't prevent audio processing.
@@ -995,15 +1026,40 @@ class Scheduler:
                 # Store the laughter detection (no duplicates found)
                 # Only store if clip file actually exists (prevent 404s)
                 clip_exists = False
-                if event.clip_path:
-                    clip_path = event.clip_path
-                    if not os.path.isabs(clip_path):
-                        # Relative path - resolve from project root
-                        project_root = os.path.dirname(
-                            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                        )
-                        clip_path = os.path.join(project_root, clip_path)
-                    clip_exists = os.path.exists(clip_path)
+                # CRITICAL GUARD (2025-11-23): Never store DB record if file doesn't exist
+                # This prevents orphaned DB records pointing to non-existent files
+                if not event.clip_path:
+                    # No clip path means file creation failed - skip this detection
+                    skipped_missing_file += 1
+                    enhanced_logger = get_current_logger()
+                    if enhanced_logger:
+                        enhanced_logger.increment_skipped_missing_file()
+                    ts_str = event_datetime.astimezone(
+                        pytz.timezone("America/Los_Angeles")
+                    ).strftime("%H:%M:%S")
+                    print(
+                        f"⏭️  SKIPPED (no clip path): {ts_str} prob={event.probability:.3f} - File creation failed (clip_path is None)"
+                    )
+                    continue
+
+                clip_path = event.clip_path
+                clip_exists = False
+                
+                # Resolve path and check existence
+                if not os.path.isabs(clip_path):
+                    # Relative path - resolve from project root
+                    project_root = os.path.dirname(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    )
+                    resolved_path = os.path.normpath(os.path.join(project_root, clip_path.lstrip("./")))
+                else:
+                    # Absolute path - use as-is
+                    resolved_path = clip_path
+                
+                clip_exists = os.path.exists(resolved_path)
+                
+                # CRITICAL GUARD: If file doesn't exist, DO NOT store in DB
+                # This is the last line of defense against orphaned records
                 if not clip_exists:
                     skipped_missing_file += 1
                     enhanced_logger = get_current_logger()
@@ -1013,12 +1069,31 @@ class Scheduler:
                         pytz.timezone("America/Los_Angeles")
                     ).strftime("%H:%M:%S")
                     print(
-                        f"⏭️  SKIPPED (missing clip file): {ts_str} prob={event.probability:.3f} - File not found: {os.path.basename(event.clip_path) if event.clip_path else 'None'}"
+                        f"⏭️  SKIPPED (missing clip file): {ts_str} prob={event.probability:.3f} - File not found: {resolved_path}"
+                    )
+                    print(
+                        f"    Original path in event: {event.clip_path}"
                     )
                     continue
+                
+                # Use resolved path for file operations, but store original path in DB
+                clip_path = resolved_path
 
                 # Log clip file status before database insertion
-                file_size = os.path.getsize(event.clip_path) if event.clip_path else 0
+                # BUG FIX (2025-11-20): Use resolved clip_path, not event.clip_path
+                # The resolved path is what we verified exists, so use it for getsize
+                # But store the original event.clip_path in DB (as it was created by yamnet_processor)
+                # CRITICAL GUARD (2025-11-23): Double-check file exists before getting size
+                # This is redundant but ensures we never proceed if file was deleted between checks
+                if not os.path.exists(clip_path):
+                    print(f"❌ CRITICAL: File disappeared between checks: {clip_path}")
+                    skipped_missing_file += 1
+                    enhanced_logger = get_current_logger()
+                    if enhanced_logger:
+                        enhanced_logger.increment_skipped_missing_file()
+                    continue
+                
+                file_size = os.path.getsize(clip_path) if clip_path else 0
 
                 try:
                     supabase.table("laughter_detections").insert(
@@ -1027,7 +1102,7 @@ class Scheduler:
                             "audio_segment_id": segment_id,
                             "timestamp": event_datetime.isoformat(),
                             "probability": event.probability,
-                            "clip_path": event.clip_path,
+                            "clip_path": event.clip_path,  # Store original path from yamnet_processor
                             "class_id": getattr(event, "class_id", None),
                             "class_name": getattr(event, "class_name", None),
                             "notes": "",
@@ -1123,7 +1198,7 @@ class Scheduler:
             # _process_audio_segment() to track total detected (BEFORE duplicate filtering).
             # Skip counters are incremented above via enhanced_logger.increment_skipped_*() methods which
             # update the logger's internal counters.
-            print("=" * 80)
+            _verbose_log("=" * 80)
 
             # REMOVED (2025-11-20): Don't increment by stored_count here - we already incremented by total_detected above
             # 
@@ -1138,16 +1213,18 @@ class Scheduler:
             #
             # The total was already incremented before duplicate filtering, so this would double-count if left here.
             # Keeping this commented for reference and to prevent accidental re-addition.
-            print(f"📊 DETECTION SUMMARY for segment {segment_id[:8]}:")
-            print(f"   🎭 Total detected by YAMNet:     {total_detected}")
-            print(f"   ⏭️  Skipped (time window dup):   {skipped_time_window}")
-            print(f"   ⏭️  Skipped (clip path dup):      {skipped_clip_path}")
-            print(f"   ⏭️  Skipped (missing file):      {skipped_missing_file}")
-            print(f"   ✅ Successfully stored:           {stored_count}")
-            print(
+            _verbose_log(f"📊 DETECTION SUMMARY for segment {segment_id[:8]}:")
+            _verbose_log(f"   🎭 Total detected by YAMNet:     {total_detected}")
+            _verbose_log(
+                f"   ⏭️  Skipped (time window dup):   {skipped_time_window}"
+            )
+            _verbose_log(f"   ⏭️  Skipped (clip path dup):      {skipped_clip_path}")
+            _verbose_log(f"   ⏭️  Skipped (missing file):      {skipped_missing_file}")
+            _verbose_log(f"   ✅ Successfully stored:           {stored_count}")
+            _verbose_log(
                 f"   📉 Total skipped:                 {skipped_time_window + skipped_clip_path + skipped_missing_file}"
             )
-            print("=" * 80)
+            _verbose_log("=" * 80)
 
             # Skip counters already incremented above during the loop via enhanced_logger.increment_skipped_*() methods
             
@@ -1313,14 +1390,14 @@ class Scheduler:
                         full_path = os.path.join(project_root, normalized_path)
 
                         if os.path.exists(full_path):
-                            print(
+                            _verbose_log(
                                 f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {os.path.basename(full_path)}"
                             )
                             await self._delete_audio_file(full_path, user_id)
                             db_files_cleaned += 1
                         elif os.path.exists(file_path):
                             # Also try original path (in case it's absolute)
-                            print(
+                            _verbose_log(
                                 f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {os.path.basename(file_path)}"
                             )
                             await self._delete_audio_file(file_path, user_id)
@@ -1341,20 +1418,47 @@ class Scheduler:
                         )  # Case-insensitive comparison
 
             # Get all clip_paths from laughter_detections table
-            laughter_result = (
-                supabase.table("laughter_detections")
-                .select("clip_path")
-                .eq("user_id", user_id)
-                .execute()
-            )
+            # 
+            # CRITICAL FIX (2025-11-24): Supabase limits results to 1000 by default.
+            # We must paginate to fetch ALL records, not just the first 1000.
+            # 
+            # WHY THIS IS CRITICAL:
+            # - Without pagination, cleanup only sees the first 1000 detections
+            # - Files from detections 1001+ are not in the exclusion set
+            # - These files get deleted as "orphaned" even though they're legitimate
+            # - This causes data loss for users with >1000 detections
+            # 
+            # PAGINATION LOGIC:
+            # - Start at offset 0, fetch 1000 records at a time
+            # - Continue until we get fewer than 1000 records (end of data)
+            # - Accumulate all clip_paths in exclusion set
+            # - This ensures ALL legitimate files are protected from cleanup
             all_clip_paths = set()
-            if laughter_result.data:
+            offset = 0
+            limit = 1000
+            while True:
+                # range() is [start, end) - exclusive on end: range(0, 1000) = records 0-999 (1000 records)
+                laughter_result = (
+                    supabase.table("laughter_detections")
+                    .select("clip_path")
+                    .eq("user_id", user_id)
+                    .range(offset, offset + limit)
+                    .execute()
+                )
+                if not laughter_result.data:
+                    # No more records, we're done
+                    break
                 for detection in laughter_result.data:
                     cp = detection.get("clip_path", "")
                     if cp:
                         # Normalize to just filename for comparison
                         clip_filename = os.path.basename(cp)
                         all_clip_paths.add(clip_filename.lower())
+                # Continue to next page if we got a full page (limit records)
+                # If we got fewer, we've reached the end
+                if len(laughter_result.data) < limit:
+                    break
+                offset += limit
 
             # Scan user's audio directory for OGG files
             project_root = os.path.dirname(
@@ -1372,7 +1476,9 @@ class Scheduler:
                         )
                         if relative_path.lower() not in all_db_paths:
                             # File exists on disk but not in database - true orphan
-                            print(f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {filename}")
+                            _verbose_log(
+                                f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {filename}"
+                            )
                             await self._delete_audio_file(file_path, user_id)
                             disk_files_cleaned += 1
 
@@ -1403,7 +1509,7 @@ class Scheduler:
                         
                         if filename.lower() not in all_clip_paths:
                             # WAV file exists on disk but not referenced in laughter_detections - true orphan
-                            print(
+                            _verbose_log(
                                 f"⚠️ 🗑️ CLEANUP: Deleting orphaned WAV clip (legacy location): {filename}"
                             )
                             await self._delete_audio_file(file_path, user_id)
@@ -1412,38 +1518,33 @@ class Scheduler:
                 # Check per-user folder location
                 user_clips_dir = os.path.join(clips_dir, user_id)
                 if os.path.exists(user_clips_dir):
-                    for filename in os.listdir(user_clips_dir):
-                        if filename.endswith(".wav"):
-                            file_path = os.path.join(user_clips_dir, filename)
-                            # Skip files created in current session (race condition fix)
-                            if filename.lower() in exclude_filenames:
-                                # Log exclusion for debugging/verification
-                                # This file was created in current processing session and is excluded from cleanup
-                                # to prevent race condition where cleanup runs before DB inserts are visible
-                                continue
-                            
-                            if filename.lower() not in all_clip_paths:
-                                # WAV file exists on disk but not referenced in laughter_detections - true orphan
-                                print(
-                                    f"⚠️ 🗑️ CLEANUP: Deleting orphaned WAV clip (user folder): {filename}"
-                                )
-                                await self._delete_audio_file(file_path, user_id)
-                                disk_files_cleaned += 1
+                    wav_files = [f for f in os.listdir(user_clips_dir) if f.endswith(".wav")]
+                    for filename in wav_files:
+                        file_path = os.path.join(user_clips_dir, filename)
+                        filename_lower = filename.lower()
+                        # Skip files created in current session (race condition fix)
+                        if filename_lower in exclude_filenames:
+                            continue
+                        
+                        if filename_lower not in all_clip_paths:
+                            # WAV file exists on disk but not referenced in laughter_detections - true orphan
+                            _verbose_log(
+                                f"⚠️ 🗑️ CLEANUP: Deleting orphaned WAV clip (user folder): {filename}"
+                            )
+                            await self._delete_audio_file(file_path, user_id)
+                            disk_files_cleaned += 1
 
             total_cleaned = db_files_cleaned + disk_files_cleaned
 
             if total_cleaned > 0:
-                print(f"🧹 CLEANUP: Deleted {total_cleaned} orphaned file(s)")
+                _verbose_log(f"🧹 CLEANUP: Deleted {total_cleaned} orphaned file(s)")
 
         except Exception as e:
             print(f"❌ Error in orphan cleanup: {str(e)}")
             # Silent success if no orphans found - don't clutter logs
 
         except Exception as e:
-            print(f"❌ ❌ CLEANUP ERROR: Error cleaning up orphaned files: {str(e)}")
-            import traceback
-
-            print(f"❌ 🔍 CLEANUP DEBUG: Full traceback: {traceback.format_exc()}")
+            print(f"❌ Error in orphan cleanup: {str(e)}")
 
     async def _mark_segment_processed(self, segment_id: str):
         """Mark audio segment as processed."""
@@ -1456,6 +1557,204 @@ class Scheduler:
 
         except Exception as e:
             print(f"❌ Error marking segment as processed: {str(e)}")
+
+    async def reprocess_date_range(
+        self,
+        user_id: str,
+        start_date_str: str,
+        end_date_str: str,
+        trigger_type: str = "manual",
+    ):
+        """
+        Reprocess audio data for a date range with cleanup and enhanced logging.
+        
+        REFACTORING (2025-11-20): This method consolidates reprocessing logic that was
+        previously duplicated between API endpoints and CLI scripts. It handles:
+        1. Cleanup of existing data (database records and disk files)
+        2. Reprocessing using shared scheduler code path
+        3. Enhanced logging for audit trail
+        4. Orphan cleanup after processing
+        
+        Args:
+            user_id: User ID to reprocess for
+            start_date_str: Start date in YYYY-MM-DD format (interpreted in user's timezone)
+            end_date_str: End date in YYYY-MM-DD format (interpreted in user's timezone)
+            trigger_type: Type of trigger ('manual', 'scheduled', 'cron')
+        
+        Returns:
+            Dict with processing summary (segments_processed, chunks_processed, etc.)
+        
+        Called by:
+            - API endpoint: /reprocess-date-range
+            - CLI script: manual_reprocess_yesterday.py (can be refactored to use this)
+        
+        REFACTORING BENEFITS:
+        - Single code path for all reprocessing (API, CLI, future scheduled)
+        - Consistent logging and error handling
+        - Easier to maintain and test
+        - Ensures all reprocessing uses enhanced_logger
+        """
+        try:
+            from datetime import date
+            import sys
+            from pathlib import Path
+            
+            # Import cleanup functions from manual_reprocess_yesterday (reuse existing code)
+            maintenance_dir = Path(__file__).resolve().parents[2] / "scripts" / "maintenance"
+            maintenance_path = str(maintenance_dir)
+            if maintenance_path not in sys.path:
+                sys.path.insert(0, maintenance_path)
+            
+            from maintenance.manual_reprocess_yesterday import (
+                clear_database_records,
+                clear_disk_files,
+            )
+            
+            # Get user's timezone
+            supabase = self._get_service_client()
+            user_result = (
+                supabase.table("users")
+                .select("timezone")
+                .eq("id", user_id)
+                .execute()
+            )
+            timezone = (
+                user_result.data[0].get("timezone", "UTC")
+                if user_result.data
+                else "UTC"
+            )
+            user_tz = pytz.timezone(timezone)
+            
+            # Parse dates in user's timezone
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+            start_time = user_tz.localize(start_date.replace(hour=0, minute=0, second=0, microsecond=0))
+            end_time = user_tz.localize(end_date.replace(hour=23, minute=59, second=59, microsecond=999999))
+            
+            # Convert to UTC for processing
+            start_utc = start_time.astimezone(pytz.UTC)
+            end_utc = end_time.astimezone(pytz.UTC)
+            
+            print(f"\n📅 Reprocessing date range:")
+            print(f"   From: {start_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            print(f"   To: {end_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            print(f"   User ID: {user_id[:8]}...\n")
+            
+            # Step 1: Cleanup disk files FIRST (reads paths from database before deleting records)
+            await clear_disk_files(user_id, start_utc, end_utc, supabase)
+            
+            # Step 2: Cleanup database records (after files are deleted)
+            await clear_database_records(user_id, start_utc, end_utc, supabase)
+            
+            # Step 3: Get API key
+            try:
+                api_key = fetch_decrypted_limitless_key(user_id, supabase=supabase)
+            except LimitlessKeyError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"No Limitless API key found for user: {exc}",
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to decrypt API key: {exc}",
+                )
+            
+            # Step 4: Process date range with enhanced logging
+            # Create separate logs for each day in the date range
+            current_date = None
+            enhanced_logger = None
+            chunk_count = 0
+            total_segments = 0
+            all_stored_clip_paths = set()
+            
+            from .enhanced_logger import get_enhanced_logger
+            
+            for chunk_count, (chunk_start, chunk_end) in enumerate(
+                generate_time_chunks(start_utc, end_utc, chunk_minutes=DEFAULT_CHUNK_MINUTES),
+                start=1,
+            ):
+                # Check if we've crossed into a new day - create new logger if needed
+                chunk_date = chunk_start.date()
+                if current_date != chunk_date:
+                    # Save previous day's log if it exists
+                    if enhanced_logger and current_date:
+                        await enhanced_logger.save_to_database(
+                            "completed",
+                            f"Manual reprocessing completed for {current_date.isoformat()}",
+                        )
+                        enhanced_logger.log_processing_summary()
+                    
+                    # Create new logger for this day
+                    current_date = chunk_date
+                    enhanced_logger = get_enhanced_logger(
+                        user_id, trigger_type, process_date=current_date
+                    )
+                    print(f"\n📅 Processing date: {current_date.isoformat()}")
+                
+                print(
+                    f"\n📦 Processing chunk {chunk_count}: {chunk_start.strftime('%Y-%m-%d %H:%M:%S UTC')} to {chunk_end.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                )
+                
+                # Process this chunk
+                processed, chunk_clip_paths = await self._process_date_range(
+                    user_id, api_key, chunk_start, chunk_end
+                )
+                total_segments += processed
+                all_stored_clip_paths.update(chunk_clip_paths)
+                
+                _verbose_log(f"  ✅ Processed {processed} segment(s) in this chunk")
+            
+            # Save final day's log
+            if enhanced_logger and current_date:
+                await enhanced_logger.save_to_database(
+                    "completed",
+                    f"Manual reprocessing completed for {current_date.isoformat()}",
+                )
+                enhanced_logger.log_processing_summary()
+            
+            # Step 5: Orphan cleanup (exclude files created in this session)
+            try:
+                now_utc = datetime.utcnow()
+                start_window = now_utc - timedelta(days=2)
+                await self._cleanup_orphaned_files(
+                    user_id, start_window, now_utc, exclude_clip_paths=all_stored_clip_paths
+                )
+                print("🧹 Orphan cleanup completed")
+            except Exception as cleanup_err:
+                print(f"⚠️ Orphan cleanup failed (non-fatal): {str(cleanup_err)}")
+            
+            print("\n" + "=" * 60)
+            print(f"✅ Reprocessing complete!")
+            print(f"   Processed {chunk_count} chunk(s) across {len(set([start_utc.date(), end_utc.date()]))} day(s)")
+            print(f"   Total segments processed: {total_segments}")
+            print("=" * 60 + "\n")
+            
+            return {
+                "message": "Reprocessing completed successfully",
+                "start_date": start_date_str,
+                "end_date": end_date_str,
+                "chunks_processed": chunk_count,
+                "segments_processed": total_segments,
+                "status": "completed",
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"❌ Error during reprocessing: {str(e)}")
+            import traceback
+            print(f"❌ {traceback.format_exc()}")
+            # Save error log for current day if logger exists
+            if 'enhanced_logger' in locals() and enhanced_logger and 'current_date' in locals() and current_date:
+                enhanced_logger.add_error("reprocessing_failed", str(e))
+                await enhanced_logger.save_to_database(
+                    "failed", f"Manual reprocessing failed: {str(e)}"
+                )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to reprocess date range: {str(e)}",
+            )
 
 
 # Global scheduler instance

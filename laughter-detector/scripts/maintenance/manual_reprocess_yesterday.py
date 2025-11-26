@@ -32,6 +32,13 @@ from typing import Optional
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# CRITICAL: Enable httpx patch BEFORE importing supabase
+# This fixes: TypeError: Client.__init__() got an unexpected keyword argument 'proxy'
+# The httpx_patch module patches httpx.Client to accept the legacy 'proxy' argument
+# that Supabase's Python client still uses (httpx >=0.25 removed 'proxy' in favor of 'proxies')
+from src.utils.httpx_patch import enable_proxy_keyword_compat
+enable_proxy_keyword_compat()
+
 from src.services.limitless_keys import (
     LimitlessKeyError,
     fetch_decrypted_limitless_key,
@@ -487,6 +494,8 @@ async def reprocess_date_range(
             start_window = now_utc - timedelta(days=2)
             # Exclude clip paths created during reprocessing to prevent race condition
             session_clip_paths = all_stored_clip_paths if 'all_stored_clip_paths' in locals() else set()
+            logger.info(f"🧹 Running orphan cleanup (2-day window)")
+            logger.info(f"🧹 Excluding {len(session_clip_paths)} clip paths from cleanup")
             await scheduler._cleanup_orphaned_files(user_id, start_window, now_utc, exclude_clip_paths=session_clip_paths)
             logger.info("🧹 Orphan cleanup completed")
         except Exception as cleanup_err:

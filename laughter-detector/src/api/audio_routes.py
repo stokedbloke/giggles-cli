@@ -145,7 +145,7 @@ async def trigger_nightly_processing(
     2. Initialize enhanced logging
     3. Call scheduler._process_user_audio which:
        - Calculates date range (start of today to now in user's timezone)
-       - Splits into 30-minute chunks
+       - Splits into 30-minute chunks (DEFAULT_CHUNK_MINUTES = 30)
        - For each chunk: calls Limitless API to download audio
        - Processes audio with YAMNet to detect laughter
        - Stores laughter events in database
@@ -179,7 +179,7 @@ async def trigger_nightly_processing(
                         ),  # User's IANA timezone from DB
                     }
                 ),
-                timeout=300.0,  # 5 minute timeout for YAMNet processing
+                timeout=600.0,  # 10 minute timeout (matches nginx proxy_read_timeout)
             )
 
             print(f"✅ Nightly processing completed for user {user['user_id'][:8]}")

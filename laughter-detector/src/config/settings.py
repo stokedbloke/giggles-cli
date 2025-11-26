@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     port: int = 8000
     allowed_origins: str = "http://localhost:8000"
     allowed_hosts: Optional[str] = "localhost,127.0.0.1"
+    verbose_processing_logs: bool = False
 
     # File Storage Configuration
     upload_dir: str = "./uploads"
