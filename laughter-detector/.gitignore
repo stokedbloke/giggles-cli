@@ -98,3 +98,7 @@ server.log
 
 # Backup files
 *.backup
+
+# Scratch directory - all temporary diagnostic/test scripts go here
+# This is a catch-all for files created during debugging/investigation
+scratch/

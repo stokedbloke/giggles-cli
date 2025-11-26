@@ -37,6 +37,18 @@ def _norm_iso(ts: str) -> str:
 
 
 DEFAULT_CHUNK_MINUTES = 30
+VERBOSE_PROCESSING_LOGS = settings.verbose_processing_logs
+
+
+def _verbose_log(message: str) -> None:
+    """
+    Print verbose-only processing logs when enabled.
+
+    Args:
+        message: Text to print.
+    """
+    if VERBOSE_PROCESSING_LOGS:
+        print(message)
 
 
 def generate_time_chunks(
@@ -234,7 +246,7 @@ class Scheduler:
             # Implements requirement: "only retrieve audio after the latest timestamp of audio retrieved"
             # Convert start_of_day to UTC for comparison with DB timestamps
             start_of_day_utc = start_of_day.astimezone(pytz.UTC)
-            print(
+            _verbose_log(
                 f"🔍 Checking for already processed audio today (from {start_of_day_utc.strftime('%Y-%m-%d %H:%M')} UTC / {start_of_day.strftime('%Y-%m-%d %H:%M')} {user.get('timezone', 'UTC')})"
             )
             # Convert now to UTC for API calls (Limitless uses UTC)
@@ -243,13 +255,13 @@ class Scheduler:
             latest_processed = await self._get_latest_processed_timestamp(
                 user_id, start_of_day_utc
             )
-            print(
+            _verbose_log(
                 f"🔍 Latest processed timestamp (UTC): {latest_processed.strftime('%Y-%m-%d %H:%M')}"
             )
 
             # Cap latest_processed at now_utc to handle data from "future" dates due to timezone issues
             if latest_processed > now_utc:
-                print(
+                _verbose_log(
                     f"⚠️ Latest processed ({latest_processed.strftime('%Y-%m-%d %H:%M')}) is in future relative to now ({now_utc.strftime('%Y-%m-%d %H:%M')}), capping to now"
                 )
                 latest_processed = now_utc
@@ -264,13 +276,13 @@ class Scheduler:
                 latest_in_user_tz = latest_processed.astimezone(
                     pytz.timezone(user.get("timezone", "UTC"))
                 )
-                print(
+                _verbose_log(
                     f"⏩ Resuming from last processed time: {latest_in_user_tz.strftime('%Y-%m-%d %H:%M')} {user.get('timezone', 'UTC')} / {latest_processed.strftime('%Y-%m-%d %H:%M')} UTC"
                 )
             else:
-                print(f"🆕 Starting fresh from beginning of day")
+                _verbose_log("🆕 Starting fresh from beginning of day")
 
-            print(
+            _verbose_log(
                 f"📊 Processing range (UTC): {start_time.strftime('%Y-%m-%d %H:%M')} to {now_utc.strftime('%Y-%m-%d %H:%M')}"
             )
 
@@ -294,7 +306,7 @@ class Scheduler:
                 ),
                 start=1,
             ):
-                print(
+                _verbose_log(
                     f"📦 Processing chunk {chunk_index}: {chunk_start.strftime('%H:%M')} UTC to {chunk_end.strftime('%H:%M')} UTC"
                 )
                 segments_processed, chunk_clip_paths = await self._process_date_range(
@@ -431,7 +443,7 @@ class Scheduler:
                         # Accumulate clip paths created in this processing session
                         # These will be excluded from orphan cleanup to prevent race condition
                         all_stored_clip_paths.update(segment_clip_paths)
-                    processed_count += 1
+                        processed_count += 1
 
             # Already handled by run-once guard earlier; keep end-of-chunk cleanup disabled
 
@@ -571,27 +583,13 @@ class Scheduler:
                 # This prevents orphan cleanup from deleting files if an exception occurs between
                 # file creation and DB insert. Previously, paths were only added after successful DB insert,
                 # creating a window where files could be deleted by cleanup.
-                # BUG FIX (2025-11-23): Resolve path before checking existence to handle relative paths correctly
                 for event in laughter_events:
                     event_clip_path = getattr(event, "clip_path", None)
                     if event_clip_path:
-                        # Resolve path to absolute (same logic as _store_laughter_detections)
-                        if not os.path.isabs(event_clip_path):
-                            project_root = os.path.dirname(
-                                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                            )
-                            normalized_path = event_clip_path.lstrip("./") if event_clip_path.startswith("./") else event_clip_path
-                            resolved_path = os.path.normpath(os.path.join(project_root, normalized_path))
-                        else:
-                            resolved_path = event_clip_path
-                        
-                        # Check if file exists using resolved path
-                        if os.path.exists(resolved_path):
-                            # Add original path to exclude set (cleanup will extract basename)
-                            stored_clip_paths.add(event_clip_path)
-                            print(f"🔍 DEBUG: Added to stored_clip_paths: {event_clip_path} (resolved: {resolved_path})")
-                        else:
-                            print(f"🔍 DEBUG: File NOT added to stored_clip_paths (doesn't exist): {event_clip_path} (resolved: {resolved_path})")
+                        # Add ALL clip paths to exclusion set, regardless of file existence
+                        # Files were just created by yamnet_processor._create_audio_clip(), so they should exist.
+                        # We exclude them from cleanup anyway because they're part of the current processing session.
+                        stored_clip_paths.add(event_clip_path)
                 
                 # Store laughter detection results in database with duplicate prevention
                 # DATABASE WRITE: Inserts into laughter_detections table (some may be skipped as duplicates)
@@ -616,12 +614,13 @@ class Scheduler:
             # Always attempt to delete the file even if processing failed early
             if file_path and not audio_deleted:
                 try:
-                    print(
-                        f"🧹 [FINALLY] Starting cleanup for file: {os.path.basename(file_path)}"
+                    import os as os_module  # Use explicit import to avoid shadowing issues
+                    _verbose_log(
+                        f"🧹 [FINALLY] Starting cleanup for file: {os_module.path.basename(file_path)}"
                     )
                     await self._delete_audio_file(file_path, user_id)
-                    print(
-                        f"🗑️ ✅ [FINALLY] Cleaned up audio file: {os.path.basename(file_path)}"
+                    _verbose_log(
+                        f"🗑️ ✅ [FINALLY] Cleaned up audio file: {os_module.path.basename(file_path)}"
                     )
                 except Exception as cleanup_error:
                     print(
@@ -672,10 +671,12 @@ class Scheduler:
                 import os
                 process = psutil.Process(os.getpid())
                 mem_mb = process.memory_info().rss / 1024 / 1024
-                print(f"🧠 [FINALLY] TensorFlow/GC cleanup complete - Memory: {mem_mb:.1f} MB")
+                _verbose_log(
+                    f"🧠 [FINALLY] TensorFlow/GC cleanup complete - Memory: {mem_mb:.1f} MB"
+                )
             except ImportError:
                 # psutil not available - log without memory info
-                print("🧠 [FINALLY] TensorFlow/GC cleanup complete")
+                _verbose_log("🧠 [FINALLY] TensorFlow/GC cleanup complete")
         except Exception as mem_error:
             # Non-fatal: Log error but don't fail segment processing
             # Reason: Memory cleanup failures shouldn't prevent audio processing.
@@ -1197,7 +1198,7 @@ class Scheduler:
             # _process_audio_segment() to track total detected (BEFORE duplicate filtering).
             # Skip counters are incremented above via enhanced_logger.increment_skipped_*() methods which
             # update the logger's internal counters.
-            print("=" * 80)
+            _verbose_log("=" * 80)
 
             # REMOVED (2025-11-20): Don't increment by stored_count here - we already incremented by total_detected above
             # 
@@ -1212,16 +1213,18 @@ class Scheduler:
             #
             # The total was already incremented before duplicate filtering, so this would double-count if left here.
             # Keeping this commented for reference and to prevent accidental re-addition.
-            print(f"📊 DETECTION SUMMARY for segment {segment_id[:8]}:")
-            print(f"   🎭 Total detected by YAMNet:     {total_detected}")
-            print(f"   ⏭️  Skipped (time window dup):   {skipped_time_window}")
-            print(f"   ⏭️  Skipped (clip path dup):      {skipped_clip_path}")
-            print(f"   ⏭️  Skipped (missing file):      {skipped_missing_file}")
-            print(f"   ✅ Successfully stored:           {stored_count}")
-            print(
+            _verbose_log(f"📊 DETECTION SUMMARY for segment {segment_id[:8]}:")
+            _verbose_log(f"   🎭 Total detected by YAMNet:     {total_detected}")
+            _verbose_log(
+                f"   ⏭️  Skipped (time window dup):   {skipped_time_window}"
+            )
+            _verbose_log(f"   ⏭️  Skipped (clip path dup):      {skipped_clip_path}")
+            _verbose_log(f"   ⏭️  Skipped (missing file):      {skipped_missing_file}")
+            _verbose_log(f"   ✅ Successfully stored:           {stored_count}")
+            _verbose_log(
                 f"   📉 Total skipped:                 {skipped_time_window + skipped_clip_path + skipped_missing_file}"
             )
-            print("=" * 80)
+            _verbose_log("=" * 80)
 
             # Skip counters already incremented above during the loop via enhanced_logger.increment_skipped_*() methods
             
@@ -1387,14 +1390,14 @@ class Scheduler:
                         full_path = os.path.join(project_root, normalized_path)
 
                         if os.path.exists(full_path):
-                            print(
+                            _verbose_log(
                                 f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {os.path.basename(full_path)}"
                             )
                             await self._delete_audio_file(full_path, user_id)
                             db_files_cleaned += 1
                         elif os.path.exists(file_path):
                             # Also try original path (in case it's absolute)
-                            print(
+                            _verbose_log(
                                 f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {os.path.basename(file_path)}"
                             )
                             await self._delete_audio_file(file_path, user_id)
@@ -1415,20 +1418,47 @@ class Scheduler:
                         )  # Case-insensitive comparison
 
             # Get all clip_paths from laughter_detections table
-            laughter_result = (
-                supabase.table("laughter_detections")
-                .select("clip_path")
-                .eq("user_id", user_id)
-                .execute()
-            )
+            # 
+            # CRITICAL FIX (2025-11-24): Supabase limits results to 1000 by default.
+            # We must paginate to fetch ALL records, not just the first 1000.
+            # 
+            # WHY THIS IS CRITICAL:
+            # - Without pagination, cleanup only sees the first 1000 detections
+            # - Files from detections 1001+ are not in the exclusion set
+            # - These files get deleted as "orphaned" even though they're legitimate
+            # - This causes data loss for users with >1000 detections
+            # 
+            # PAGINATION LOGIC:
+            # - Start at offset 0, fetch 1000 records at a time
+            # - Continue until we get fewer than 1000 records (end of data)
+            # - Accumulate all clip_paths in exclusion set
+            # - This ensures ALL legitimate files are protected from cleanup
             all_clip_paths = set()
-            if laughter_result.data:
+            offset = 0
+            limit = 1000
+            while True:
+                # range() is [start, end) - exclusive on end: range(0, 1000) = records 0-999 (1000 records)
+                laughter_result = (
+                    supabase.table("laughter_detections")
+                    .select("clip_path")
+                    .eq("user_id", user_id)
+                    .range(offset, offset + limit)
+                    .execute()
+                )
+                if not laughter_result.data:
+                    # No more records, we're done
+                    break
                 for detection in laughter_result.data:
                     cp = detection.get("clip_path", "")
                     if cp:
                         # Normalize to just filename for comparison
                         clip_filename = os.path.basename(cp)
                         all_clip_paths.add(clip_filename.lower())
+                # Continue to next page if we got a full page (limit records)
+                # If we got fewer, we've reached the end
+                if len(laughter_result.data) < limit:
+                    break
+                offset += limit
 
             # Scan user's audio directory for OGG files
             project_root = os.path.dirname(
@@ -1446,7 +1476,9 @@ class Scheduler:
                         )
                         if relative_path.lower() not in all_db_paths:
                             # File exists on disk but not in database - true orphan
-                            print(f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {filename}")
+                            _verbose_log(
+                                f"⚠️ 🗑️ CLEANUP: Deleting orphaned OGG: {filename}"
+                            )
                             await self._delete_audio_file(file_path, user_id)
                             disk_files_cleaned += 1
 
@@ -1462,14 +1494,6 @@ class Scheduler:
             if exclude_clip_paths:
                 for path in exclude_clip_paths:
                     exclude_filenames.add(os.path.basename(path).lower())
-                # DEBUG: Log exclude set size and sample entries
-                print(f"🔍 CLEANUP DEBUG: exclude_clip_paths has {len(exclude_clip_paths)} paths")
-                print(f"🔍 CLEANUP DEBUG: exclude_filenames has {len(exclude_filenames)} filenames")
-                if len(exclude_filenames) > 0:
-                    sample_filenames = list(exclude_filenames)[:5]
-                    print(f"🔍 CLEANUP DEBUG: Sample exclude filenames: {sample_filenames}")
-            else:
-                print(f"🔍 CLEANUP DEBUG: exclude_clip_paths is None or empty - no files will be excluded")
             
             clips_dir = os.path.join(project_root, "uploads", "clips")
             if os.path.exists(clips_dir):
@@ -1485,7 +1509,7 @@ class Scheduler:
                         
                         if filename.lower() not in all_clip_paths:
                             # WAV file exists on disk but not referenced in laughter_detections - true orphan
-                            print(
+                            _verbose_log(
                                 f"⚠️ 🗑️ CLEANUP: Deleting orphaned WAV clip (legacy location): {filename}"
                             )
                             await self._delete_audio_file(file_path, user_id)
@@ -1495,31 +1519,25 @@ class Scheduler:
                 user_clips_dir = os.path.join(clips_dir, user_id)
                 if os.path.exists(user_clips_dir):
                     wav_files = [f for f in os.listdir(user_clips_dir) if f.endswith(".wav")]
-                    print(f"🔍 CLEANUP DEBUG: Found {len(wav_files)} WAV files in {user_clips_dir}")
                     for filename in wav_files:
                         file_path = os.path.join(user_clips_dir, filename)
                         filename_lower = filename.lower()
                         # Skip files created in current session (race condition fix)
                         if filename_lower in exclude_filenames:
-                            # Log exclusion for debugging/verification
-                            print(f"🔍 CLEANUP DEBUG: EXCLUDED from deletion: {filename} (in exclude_filenames)")
                             continue
                         
                         if filename_lower not in all_clip_paths:
                             # WAV file exists on disk but not referenced in laughter_detections - true orphan
-                            print(
+                            _verbose_log(
                                 f"⚠️ 🗑️ CLEANUP: Deleting orphaned WAV clip (user folder): {filename}"
                             )
-                            print(f"🔍 CLEANUP DEBUG: File {filename} not in all_clip_paths (DB has {len(all_clip_paths)} clip paths)")
                             await self._delete_audio_file(file_path, user_id)
                             disk_files_cleaned += 1
-                        else:
-                            print(f"🔍 CLEANUP DEBUG: KEPT file {filename} (exists in all_clip_paths)")
 
             total_cleaned = db_files_cleaned + disk_files_cleaned
 
             if total_cleaned > 0:
-                print(f"🧹 CLEANUP: Deleted {total_cleaned} orphaned file(s)")
+                _verbose_log(f"🧹 CLEANUP: Deleted {total_cleaned} orphaned file(s)")
 
         except Exception as e:
             print(f"❌ Error in orphan cleanup: {str(e)}")
@@ -1685,7 +1703,7 @@ class Scheduler:
                 total_segments += processed
                 all_stored_clip_paths.update(chunk_clip_paths)
                 
-                print(f"  ✅ Processed {processed} segment(s) in this chunk")
+                _verbose_log(f"  ✅ Processed {processed} segment(s) in this chunk")
             
             # Save final day's log
             if enhanced_logger and current_date:

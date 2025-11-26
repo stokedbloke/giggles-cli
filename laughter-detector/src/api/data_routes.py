@@ -82,14 +82,33 @@ async def get_daily_summary(
         # Create RLS-compliant client
         supabase = create_user_supabase_client(credentials)
 
-        # Get all laughter detections with timestamps (RLS will ensure user can only access their own)
-        detections_result = (
-            supabase.table("laughter_detections")
-            .select("id, timestamp, probability")
-            .execute()
-        )
+        # Get all laughter detections with timestamps (RLS ensures per-user access)
+        # CRITICAL FIX (2025-11-24): Supabase limits results to 1000 by default
+        # We must paginate to fetch ALL records, not just the first 1000
+        # Without this fix, users with >1000 detections see incomplete data in UI
+        # 
+        # PAGINATION LOGIC:
+        # - Start at offset 0, fetch 1000 records at a time
+        # - Continue until we get fewer than 1000 records (end of data)
+        # - Accumulate all records in all_detections list
+        offset = 0
+        page_size = 1000
+        all_detections = []
+        while True:
+            detections_result = (
+                supabase.table("laughter_detections")
+                .select("id, timestamp, probability")
+                .range(offset, offset + page_size)
+                .execute()
+            )
+            if not detections_result.data:
+                break
+            all_detections.extend(detections_result.data)
+            if len(detections_result.data) < page_size:
+                break
+            offset += page_size
 
-        if not detections_result.data:
+        if not all_detections:
             return []
 
         # Group detections by date in user's timezone
@@ -97,7 +116,7 @@ async def get_daily_summary(
         # to group by local date (ensures "Friday" shows Friday's data regardless of timezone)
         summaries = {}
 
-        for detection in detections_result.data:
+        for detection in all_detections:
             # Parse UTC timestamp (database stores all timestamps in UTC)
             timestamp_utc = datetime.fromisoformat(
                 detection["timestamp"].replace("Z", "+00:00")
@@ -450,24 +469,79 @@ async def get_audio_clip(
             )
 
         clip_path = result.data[0]["clip_path"]
+        
+        # Validate clip_path exists and is not None/empty
+        if not clip_path:
+            print(f"❌ Empty or None clip_path for clip_id {clip_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Audio clip path is missing",
+            )
 
         # Decrypt the path if it's encrypted (for old data)
         # New data has plaintext paths, old data has encrypted paths
         try:
             from ..auth.encryption import encryption_service
-
-            # Try to decrypt - if it fails, it's already plaintext
             clip_path = encryption_service.decrypt(clip_path)
-        except:
-            pass  # Already plaintext, keep as is
+        except Exception as decrypt_err:
+            # Already plaintext, keep as is (or decryption failed - try as plaintext)
+            pass
 
-        # Convert relative path to absolute path
-        if not os.path.isabs(clip_path):
-            # Path is relative, make it absolute relative to the laughter-detector directory
-            base_dir = os.path.dirname(
-                os.path.dirname(os.path.dirname(__file__))
-            )  # Go up to laughter-detector/
-            clip_path = os.path.join(base_dir, clip_path.lstrip("./"))
+        # Convert path to absolute path (handles both absolute and relative paths)
+        # Ensure clip_path is still valid after decryption
+        if not clip_path:
+            print(f"❌ clip_path became empty after decryption for clip_id {clip_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Audio clip path is invalid",
+            )
+            
+        if os.path.isabs(clip_path):
+            # Absolute path - use as-is (for backward compatibility with existing data)
+            if not os.path.exists(clip_path):
+                print(f"❌ Audio file not found: {clip_path}")
+        else:
+            # Path is relative, resolve using settings.upload_dir for consistency
+            # This ensures path resolution works regardless of how FastAPI is started
+            from ..config.settings import settings
+
+            # Make upload_dir absolute if it's relative
+            upload_dir_abs = (
+                os.path.abspath(settings.upload_dir)
+                if not os.path.isabs(settings.upload_dir)
+                else settings.upload_dir
+            )
+
+            # If path starts with ./uploads or uploads/, extract the path after "uploads/"
+            if clip_path.startswith("./uploads/") or clip_path.startswith("uploads/"):
+                path_after_uploads = (
+                    clip_path.split("uploads/", 1)[1]
+                    if "uploads/" in clip_path
+                    else clip_path
+                )
+                candidate_path = os.path.normpath(
+                    os.path.join(upload_dir_abs, path_after_uploads)
+                )
+
+                if os.path.exists(candidate_path):
+                    clip_path = candidate_path
+                else:
+                    # Fallback to project root relative path (covers cases where FastAPI
+                    # was started from a different working directory, e.g. repo root)
+                    project_root = os.path.dirname(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    )
+                    alt_path = os.path.normpath(
+                        os.path.join(project_root, "uploads", path_after_uploads)
+                    )
+                    clip_path = alt_path
+            else:
+                # Fallback: use same logic as before
+                project_root = os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                )
+                normalized_path = clip_path.lstrip("./") if clip_path.startswith("./") else clip_path
+                clip_path = os.path.normpath(os.path.join(project_root, normalized_path))
 
         # Check if file exists
         if not os.path.exists(clip_path):
@@ -477,18 +551,66 @@ async def get_audio_clip(
                 detail="Audio file not found on disk",
             )
 
-        # Return the audio file
-        from fastapi.responses import FileResponse
-
-        return FileResponse(clip_path, media_type="audio/wav")
+        # Return the audio file with explicit Content-Length header
+        # 
+        # CRITICAL FIX (2025-11-24): FastAPI FileResponse should set Content-Length automatically,
+        # but we explicitly set it to prevent ERR_CONTENT_LENGTH_MISMATCH errors in browsers.
+        # 
+        # WHY THIS IS NEEDED:
+        # - Browsers make multiple simultaneous requests when loading many audio clips
+        # - Browser throttling can cause incomplete reads if Content-Length is missing/incorrect
+        # - This leads to "Audio file not available" errors in the UI
+        # - Explicit Content-Length ensures browsers know the exact file size upfront
+        # 
+        # IMPACT:
+        # - Fixes ERR_CONTENT_LENGTH_MISMATCH errors in browser console
+        # - Prevents "Audio file not available" messages in UI
+        # - Ensures reliable audio playback for users
+        try:
+            from fastapi.responses import FileResponse
+            
+            # Get file size (may fail if file is deleted between existence check and size check)
+            try:
+                file_size = os.path.getsize(clip_path)
+            except OSError as e:
+                # File may have been deleted between existence check and size check
+                print(f"❌ Error getting file size for {clip_path}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Audio file not found on disk",
+                )
+            
+            response = FileResponse(clip_path, media_type="audio/wav")
+            response.headers["Content-Length"] = str(file_size)
+            return response
+        except HTTPException:
+            # Re-raise HTTP exceptions (404, etc.)
+            raise
+        except Exception as e:
+            # Log unexpected errors for debugging
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"❌ Unexpected error serving audio clip {clip_id}: {e}")
+            print(f"❌ Traceback: {error_trace}")
+            # clip_path might not be defined if error happened earlier
+            clip_path_str = clip_path if 'clip_path' in locals() else "unknown"
+            print(f"❌ Clip path: {clip_path_str}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error serving audio file: {str(e)}",
+            )
 
     except HTTPException as e:
         raise e
     except Exception as e:
-        print(f"❌ Error getting audio clip: {str(e)}")
+        # Log full error details for debugging
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"❌ Error getting audio clip {clip_id}: {str(e)}")
+        print(f"❌ Traceback: {error_trace}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get audio clip",
+            detail=f"Error getting audio clip: {str(e)}",
         )
 
 
@@ -572,7 +694,16 @@ async def reprocess_date_range_api(
     """
     Reprocess audio data for a date range.
 
+    REFACTORING (2025-11-20): Now uses scheduler.reprocess_date_range() for unified
+    reprocessing logic. This ensures:
+    - Single code path for all reprocessing (API, CLI, future scheduled)
+    - Consistent logging and error handling
+    - Enhanced logging creates processing_logs entries for audit trail
+    
     This clears existing data for the date range and redownloads/reprocesses from Limitless API.
+    
+    NOTE: This is a long-running operation (8+ minutes). nginx timeout must be configured
+    to at least 600s (10 minutes) to avoid 504 Gateway Timeout errors.
 
     Args:
         request: Request body with start_date and end_date (YYYY-MM-DD format)
@@ -593,30 +724,20 @@ async def reprocess_date_range_api(
             f"🔄 Starting reprocess for {start_date} to {end_date}, user {user_id[:8]}"
         )
 
-        # Import the reprocess function from manual_reprocess_yesterday
-        import sys
-        from pathlib import Path
+        # REFACTORING: Use scheduler.reprocess_date_range() instead of old script
+        # This ensures consistent code path and enhanced logging
+        from ..services.scheduler import scheduler
 
-        maintenance_dir = (
-            Path(__file__).resolve().parents[2] / "scripts" / "maintenance"
+        result = await scheduler.reprocess_date_range(
+            user_id=user_id,
+            start_date_str=start_date,
+            end_date_str=end_date,
+            trigger_type="manual",
         )
-        maintenance_path = str(maintenance_dir)
-        if maintenance_path not in sys.path:
-            sys.path.insert(0, maintenance_path)
-
-        from manual_reprocess_yesterday import reprocess_date_range as reprocess_func
-
-        # Call the reprocess function (it handles all the work)
-        await reprocess_func(start_date, end_date, user_id)
 
         print(f"✅ Reprocess complete for {start_date} to {end_date}")
 
-        return {
-            "message": "Reprocessing completed successfully",
-            "start_date": start_date,
-            "end_date": end_date,
-            "status": "completed",
-        }
+        return result
 
     except HTTPException:
         raise
