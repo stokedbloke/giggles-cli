@@ -21,6 +21,7 @@ from ..services.limitless_keys import (
 )
 from ..services.yamnet_processor import yamnet_processor
 from ..services.supabase_client import get_service_role_client
+from ..utils.path_utils import strip_leading_dot_slash
 
 
 def _norm_iso(ts: str) -> str:
@@ -934,20 +935,162 @@ class Scheduler:
                         if d.get("class_id") == event_class_id
                     ]
                     if matching_class_detections:
-                        skipped_time_window += 1
-                        enhanced_logger = get_current_logger()
-                        if enhanced_logger:
-                            enhanced_logger.increment_skipped_time_window()
-                        ts_str = event_datetime.astimezone(
-                            pytz.timezone("America/Los_Angeles")
-                        ).strftime("%H:%M:%S")
-                        # Temporarily disable noisy duplicate logs to keep reprocess output readable.
-                        # print(
-                        #     f"⏭️  SKIPPED (duplicate within 5s): {ts_str} prob={event.probability:.3f} - Already exists at {matching_class_detections[0]['timestamp']} (class_id={event_class_id})"
-                        # )
-                        # Delete duplicate clip file immediately (before it gets stored in DB)
-                        try:
-                            if getattr(event, "clip_path", None):
+                        # CRITICAL FIX (2025-11-27): Orphaned Records Prevention
+                        # 
+                        # PROBLEM: When duplicate detection finds an existing DB record, the code previously
+                        # deleted the new file immediately. However, if the existing record's file was already
+                        # deleted (by cleanup, manual deletion, or filesystem issues), this created an orphaned
+                        # DB record - a record pointing to a non-existent file, causing "audio file not available"
+                        # errors in the UI.
+                        #
+                        # SOLUTION: Before deleting the new file, verify the existing record's file still exists.
+                        # - If existing file exists: Delete new file (true duplicate) - same behavior as before
+                        # - If existing file missing: Update orphaned record with new file instead of deleting it
+                        #
+                        # This ensures every DB record has a corresponding file on disk, preventing UI errors.
+                        existing_record = matching_class_detections[0]
+                        existing_record_id = existing_record.get("id")
+                        
+                        # Fetch the existing record's clip_path to check if its file exists
+                        existing_record_full = (
+                            supabase.table("laughter_detections")
+                            .select("id, clip_path")
+                            .eq("id", existing_record_id)
+                            .execute()
+                        )
+                        
+                        existing_file_exists = False
+                        if existing_record_full.data:
+                            existing_clip_path = existing_record_full.data[0].get("clip_path")
+                            if existing_clip_path:
+                                # Resolve existing file path (handle both relative and absolute paths)
+                                # NOTE: This duplicates path resolution logic - could be refactored to use
+                                # path_utils.py helpers in the future, but kept as-is for minimal change
+                                if not os.path.isabs(existing_clip_path):
+                                    # Relative path (e.g., ./uploads/clips/user/file.wav)
+                                    # Resolve from project root
+                                    project_root_check = os.path.dirname(
+                                        os.path.dirname(
+                                            os.path.dirname(os.path.abspath(__file__))
+                                        )
+                                    )
+                                    existing_resolved = os.path.normpath(
+                                        os.path.join(project_root_check, strip_leading_dot_slash(existing_clip_path))
+                                    )
+                                else:
+                                    # Absolute path (e.g., /var/lib/giggles/uploads/clips/user/file.wav)
+                                    existing_resolved = existing_clip_path
+                                existing_file_exists = os.path.exists(existing_resolved)
+                        
+                        if existing_file_exists:
+                            # CASE 1: Existing file exists - this is a true duplicate
+                            # Delete the new file and skip DB insertion (same behavior as before fix)
+                            skipped_time_window += 1
+                            enhanced_logger = get_current_logger()
+                            if enhanced_logger:
+                                enhanced_logger.increment_skipped_time_window()
+                            ts_str = event_datetime.astimezone(
+                                pytz.timezone("America/Los_Angeles")
+                            ).strftime("%H:%M:%S")
+                            # Delete duplicate clip file immediately (before it gets stored in DB)
+                            try:
+                                if getattr(event, "clip_path", None):
+                                    # Resolve path - handle both relative and absolute paths
+                                    clip_path = event.clip_path
+                                    if not os.path.isabs(clip_path):
+                                        # Relative path - resolve from project root
+                                        project_root = os.path.dirname(
+                                            os.path.dirname(
+                                                os.path.dirname(os.path.abspath(__file__))
+                                            )
+                                        )
+                                        clip_path = os.path.join(project_root, clip_path)
+
+                                    if os.path.exists(clip_path):
+                                        os.remove(clip_path)
+                            except Exception as cleanup_err:
+                                # Silently ignore cleanup errors (file may already be deleted)
+                                pass
+                            continue  # Skip this duplicate - don't insert into DB
+                        else:
+                            # CASE 2: Existing file is missing - orphaned DB record detected
+                            # Instead of deleting the new file (which would create another orphan),
+                            # update the existing orphaned record to point to the new file.
+                            # This recovers the orphaned record and ensures data integrity.
+                            try:
+                                if getattr(event, "clip_path", None) and existing_record_id:
+                                    # Update the orphaned record with the new file path and latest probability
+                                    # (probability may have changed slightly if reprocessing same segment)
+                                    supabase.table("laughter_detections").update({
+                                        "clip_path": event.clip_path,
+                                        "probability": event.probability,
+                                    }).eq("id", existing_record_id).execute()
+                                    
+                                    # Track this as successfully stored (even though it was an update, not insert)
+                                    if event.clip_path:
+                                        stored_clip_paths.add(event.clip_path)
+                                    stored_count += 1
+                                    continue  # Skip inserting a new record (we updated the existing one)
+                            except Exception as update_err:
+                                # If update fails (e.g., DB error), fall through to normal processing
+                                # This ensures we don't lose the detection if update fails
+                                enhanced_logger = get_current_logger()
+                                if enhanced_logger:
+                                    enhanced_logger.add_error("orphaned_record_update_failed", f"Failed to update orphaned record {existing_record_id}: {str(update_err)}")
+                                # Fall through to normal processing if update fails
+
+                # DUPLICATE PREVENTION: Check for existing clip path
+                if event.clip_path:
+                    existing_clip = (
+                        supabase.table("laughter_detections")
+                        .select("id, clip_path")
+                        .eq("clip_path", event.clip_path)
+                        .execute()
+                    )
+                    if existing_clip.data:
+                        # CRITICAL FIX (2025-11-27): Orphaned Records Prevention (Duplicate by clip_path)
+                        # 
+                        # Same fix as time-window duplicate check above, but for exact clip_path matches.
+                        # When the same clip_path is found (same segment + timestamp + class_id), verify
+                        # the existing record's file exists before deleting the new file.
+                        #
+                        # NOTE: If clip_path is the same, the new file we just created is at the same path
+                        # as the missing file, so we keep it and just update the probability.
+                        existing_clip_record = existing_clip.data[0]
+                        existing_clip_id = existing_clip_record.get("id")
+                        existing_clip_path_db = existing_clip_record.get("clip_path")
+                        
+                        existing_file_exists = False
+                        if existing_clip_path_db:
+                            # Resolve existing file path (handle both relative and absolute paths)
+                            # NOTE: Path resolution logic duplicated from above - could be refactored
+                            if not os.path.isabs(existing_clip_path_db):
+                                # Relative path - resolve from project root
+                                project_root_check = os.path.dirname(
+                                    os.path.dirname(
+                                        os.path.dirname(os.path.abspath(__file__))
+                                    )
+                                )
+                                existing_resolved = os.path.normpath(
+                                    os.path.join(project_root_check, strip_leading_dot_slash(existing_clip_path_db))
+                                )
+                            else:
+                                # Absolute path - use as-is
+                                existing_resolved = existing_clip_path_db
+                            existing_file_exists = os.path.exists(existing_resolved)
+                        
+                        if existing_file_exists:
+                            # CASE 1: Existing file exists - this is a true duplicate
+                            # Delete the new file and skip DB insertion (same behavior as before fix)
+                            skipped_clip_path += 1
+                            enhanced_logger = get_current_logger()
+                            if enhanced_logger:
+                                enhanced_logger.increment_skipped_clip_path()
+                            ts_str = event_datetime.astimezone(
+                                pytz.timezone("America/Los_Angeles")
+                            ).strftime("%H:%M:%S")
+                            # Delete duplicate clip file immediately (before it gets stored in DB)
+                            try:
                                 # Resolve path - handle both relative and absolute paths
                                 clip_path = event.clip_path
                                 if not os.path.isabs(clip_path):
@@ -961,67 +1104,35 @@ class Scheduler:
 
                                 if os.path.exists(clip_path):
                                     os.remove(clip_path)
-                                    # print(
-                                    #     f"🧹 Deleted duplicate clip (time-window): {os.path.basename(event.clip_path)}"
-                                    # )
-                                else:
-                                    # print(
-                                    #     f"⚠️ Duplicate clip file not found at: {clip_path}"
-                                    # )
-                                    pass
-                        except Exception as cleanup_err:
-                            # print(
-                            #     f"⚠️ Failed to delete duplicate clip: {str(cleanup_err)}"
-                            # )
-                            pass
-                        continue  # Skip this duplicate
-
-                # DUPLICATE PREVENTION: Check for existing clip path
-                if event.clip_path:
-                    existing_clip = (
-                        supabase.table("laughter_detections")
-                        .select("id")
-                        .eq("clip_path", event.clip_path)
-                        .execute()
-                    )
-                    if existing_clip.data:
-                        skipped_clip_path += 1
-                        enhanced_logger = get_current_logger()
-                        if enhanced_logger:
-                            enhanced_logger.increment_skipped_clip_path()
-                        ts_str = event_datetime.astimezone(
-                            pytz.timezone("America/Los_Angeles")
-                        ).strftime("%H:%M:%S")
-                        print(
-                            f"⏭️  SKIPPED (duplicate clip path): {ts_str} prob={event.probability:.3f} - Clip already exists: {os.path.basename(event.clip_path)}"
-                        )
-                        # Delete duplicate clip file immediately (before it gets stored in DB)
-                        try:
-                            # Resolve path - handle both relative and absolute paths
-                            clip_path = event.clip_path
-                            if not os.path.isabs(clip_path):
-                                # Relative path - resolve from project root
-                                project_root = os.path.dirname(
-                                    os.path.dirname(
-                                        os.path.dirname(os.path.abspath(__file__))
-                                    )
-                                )
-                                clip_path = os.path.join(project_root, clip_path)
-
-                            if os.path.exists(clip_path):
-                                os.remove(clip_path)
-                                print(
-                                    f"🧹 Deleted duplicate clip (path): {os.path.basename(event.clip_path)}"
-                                )
-                            else:
-                                print(
-                                    f"⚠️ Duplicate clip file not found at: {clip_path}"
-                                )
-                        except Exception as cleanup_err:
-                            print(
-                                f"⚠️ Failed to delete duplicate clip by path: {str(cleanup_err)}"
-                            )
-                        continue  # Skip this duplicate
+                            except Exception as cleanup_err:
+                                # Silently ignore cleanup errors (file may already be deleted)
+                                pass
+                            continue  # Skip this duplicate - don't insert into DB
+                        else:
+                            # CASE 2: Existing file is missing - orphaned DB record detected
+                            # Since clip_path is the same, the new file we just created is at the same path
+                            # as the missing file. Keep the new file and update the existing record's probability
+                            # (probability may have changed slightly if reprocessing the same segment).
+                            try:
+                                if existing_clip_id:
+                                    # Update probability in case it's slightly different (reprocessing same segment)
+                                    # clip_path is the same, so no need to update it - the new file is already there
+                                    supabase.table("laughter_detections").update({
+                                        "probability": event.probability,
+                                    }).eq("id", existing_clip_id).execute()
+                                    
+                                    # Track this as successfully stored (even though it was an update, not insert)
+                                    if event.clip_path:
+                                        stored_clip_paths.add(event.clip_path)
+                                    stored_count += 1
+                                    continue  # Skip inserting a new record (we updated the existing one)
+                            except Exception as update_err:
+                                # If update fails (e.g., DB error), fall through to normal processing
+                                # This ensures we don't lose the detection if update fails
+                                enhanced_logger = get_current_logger()
+                                if enhanced_logger:
+                                    enhanced_logger.add_error("orphaned_record_update_failed", f"Failed to update orphaned record {existing_clip_id}: {str(update_err)}")
+                                # Fall through to normal processing if update fails
 
                 # Store the laughter detection (no duplicates found)
                 # Only store if clip file actually exists (prevent 404s)
@@ -1051,7 +1162,9 @@ class Scheduler:
                     project_root = os.path.dirname(
                         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                     )
-                    resolved_path = os.path.normpath(os.path.join(project_root, clip_path.lstrip("./")))
+                    resolved_path = os.path.normpath(
+                        os.path.join(project_root, strip_leading_dot_slash(clip_path))
+                    )
                 else:
                     # Absolute path - use as-is
                     resolved_path = clip_path
@@ -1382,7 +1495,7 @@ class Scheduler:
                     file_path = segment.get("file_path")
                     if file_path:
                         # Normalize path - remove ./ prefix if present, handle relative paths
-                        normalized_path = file_path.lstrip("./")
+                        normalized_path = strip_leading_dot_slash(file_path)
                         # Construct full path relative to project root
                         project_root = os.path.dirname(
                             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1412,7 +1525,7 @@ class Scheduler:
                 for seg in result.data:
                     fp = seg.get("file_path", "")
                     if fp:
-                        normalized = fp.lstrip("./")
+                        normalized = strip_leading_dot_slash(fp)
                         all_db_paths.add(
                             normalized.lower()
                         )  # Case-insensitive comparison

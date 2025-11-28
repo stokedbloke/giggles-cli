@@ -24,6 +24,7 @@ from .dependencies import get_current_user
 from supabase import Client
 
 from ..services.supabase_client import get_user_client
+from ..utils.path_utils import strip_leading_dot_slash
 
 
 # Create router
@@ -496,29 +497,48 @@ async def get_audio_clip(
                 detail="Audio clip path is invalid",
             )
             
+        # Make upload_dir absolute if it's relative (needed for both absolute and relative paths)
+        from ..config.settings import settings
+        upload_dir_abs = (
+            os.path.abspath(settings.upload_dir)
+            if not os.path.isabs(settings.upload_dir)
+            else settings.upload_dir
+        )
+
         if os.path.isabs(clip_path):
-            # Absolute path - use as-is (for backward compatibility with existing data)
+            # Absolute path - try as-is first (for backward compatibility with existing data)
             if not os.path.exists(clip_path):
-                print(f"❌ Audio file not found: {clip_path}")
+                # CRITICAL FIX (2025-11-26): If absolute path doesn't exist, try to resolve it
+                # by extracting the relative part and resolving from upload_dir.
+                # This fixes "audio file not available" for old data with absolute paths.
+                if "uploads" in clip_path:
+                    # Extract path after "uploads/"
+                    parts = clip_path.split("uploads/")
+                    if len(parts) > 1:
+                        path_after_uploads = parts[1]
+                        candidate_path = os.path.normpath(
+                            os.path.join(upload_dir_abs, path_after_uploads)
+                        )
+                        if os.path.exists(candidate_path):
+                            clip_path = candidate_path
+                            print(f"✅ Resolved absolute path to: {clip_path}")
+                        else:
+                            print(f"❌ Audio file not found at absolute path: {clip_path}")
+                            print(f"   Also tried: {candidate_path}")
+                else:
+                    print(f"❌ Audio file not found: {clip_path}")
         else:
             # Path is relative, resolve using settings.upload_dir for consistency
             # This ensures path resolution works regardless of how FastAPI is started
-            from ..config.settings import settings
+            # (upload_dir_abs already defined above)
 
-            # Make upload_dir absolute if it's relative
-            upload_dir_abs = (
-                os.path.abspath(settings.upload_dir)
-                if not os.path.isabs(settings.upload_dir)
-                else settings.upload_dir
-            )
+            normalized_clip_path = clip_path
+            if normalized_clip_path.startswith("./"):
+                normalized_clip_path = strip_leading_dot_slash(normalized_clip_path)
 
-            # If path starts with ./uploads or uploads/, extract the path after "uploads/"
-            if clip_path.startswith("./uploads/") or clip_path.startswith("uploads/"):
-                path_after_uploads = (
-                    clip_path.split("uploads/", 1)[1]
-                    if "uploads/" in clip_path
-                    else clip_path
-                )
+            uploads_marker = normalized_clip_path.find("uploads/")
+            if uploads_marker != -1:
+                path_after_uploads = normalized_clip_path[uploads_marker + len("uploads/") :]
                 candidate_path = os.path.normpath(
                     os.path.join(upload_dir_abs, path_after_uploads)
                 )
@@ -536,11 +556,11 @@ async def get_audio_clip(
                     )
                     clip_path = alt_path
             else:
-                # Fallback: use same logic as before
+                # Fallback: resolve relative to project root without stripping "../"
                 project_root = os.path.dirname(
                     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 )
-                normalized_path = clip_path.lstrip("./") if clip_path.startswith("./") else clip_path
+                normalized_path = strip_leading_dot_slash(clip_path)
                 clip_path = os.path.normpath(os.path.join(project_root, normalized_path))
 
         # Check if file exists
