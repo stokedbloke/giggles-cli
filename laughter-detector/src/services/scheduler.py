@@ -19,7 +19,12 @@ from ..services.limitless_keys import (
     LimitlessKeyError,
     fetch_decrypted_limitless_key,
 )
-from ..services.yamnet_processor import yamnet_processor
+# Lazy import to avoid TensorFlow mutex crash on macOS startup
+# yamnet_processor will be imported when actually needed
+def _get_yamnet_processor():
+    """Lazy import of yamnet_processor to avoid TensorFlow crash on startup."""
+    from ..services.yamnet_processor import yamnet_processor
+    return yamnet_processor
 from ..services.supabase_client import get_service_role_client
 from ..utils.path_utils import strip_leading_dot_slash
 
@@ -50,6 +55,29 @@ def _verbose_log(message: str) -> None:
     """
     if VERBOSE_PROCESSING_LOGS:
         print(message)
+
+
+def _ensure_absolute_path(path: str) -> str:
+    """
+    Resolve a path to absolute, handling both relative and absolute paths.
+    
+    Args:
+        path: Path that may be relative (e.g., ./uploads/clips/...) or absolute
+        
+    Returns:
+        Absolute path
+    """
+    if not path:
+        return path
+    if os.path.isabs(path):
+        return path
+    # Relative path - resolve from project root
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    return os.path.normpath(
+        os.path.join(project_root, strip_leading_dot_slash(path))
+    )
 
 
 def generate_time_chunks(
@@ -546,6 +574,7 @@ class Scheduler:
                 file_path = segment.file_path
 
             # Run YAMNet processing on actual audio file
+            yamnet_processor = _get_yamnet_processor()  # Lazy import to avoid TensorFlow crash
             laughter_events = await yamnet_processor.process_audio_file(
                 file_path, user_id
             )
@@ -1021,8 +1050,10 @@ class Scheduler:
                                 if getattr(event, "clip_path", None) and existing_record_id:
                                     # Update the orphaned record with the new file path and latest probability
                                     # (probability may have changed slightly if reprocessing same segment)
+                                    # CRITICAL FIX (2025-11-30): Store absolute path (uniform path format)
+                                    # event.clip_path is now absolute from yamnet_processor, use it directly
                                     supabase.table("laughter_detections").update({
-                                        "clip_path": event.clip_path,
+                                        "clip_path": event.clip_path,  # Store absolute path (uniform format)
                                         "probability": event.probability,
                                     }).eq("id", existing_record_id).execute()
                                     
@@ -1041,12 +1072,30 @@ class Scheduler:
 
                 # DUPLICATE PREVENTION: Check for existing clip path
                 if event.clip_path:
+                    # CRITICAL FIX (2025-11-30): Compare absolute paths directly (uniform path format)
+                    # event.clip_path is now absolute from yamnet_processor
+                    # For backwards compatibility during migration, normalize old relative paths in DB
+                    new_path_absolute = event.clip_path  # Already absolute from yamnet_processor
+                    
+                    # Get all records and compare paths
+                    # During migration period, DB may have both relative (old) and absolute (new) paths
                     existing_clip = (
                         supabase.table("laughter_detections")
                         .select("id, clip_path")
-                        .eq("clip_path", event.clip_path)
                         .execute()
                     )
+                    # Filter by path comparison (normalize old relative paths for comparison)
+                    if new_path_absolute and existing_clip.data:
+                        matching_records = [
+                            r for r in existing_clip.data
+                            if r.get("clip_path") and (
+                                r["clip_path"] == new_path_absolute or  # Direct match (both absolute)
+                                _ensure_absolute_path(r["clip_path"]) == new_path_absolute  # Normalize old relative paths
+                            )
+                        ]
+                        existing_clip.data = matching_records
+                    else:
+                        existing_clip.data = []
                     if existing_clip.data:
                         # CRITICAL FIX (2025-11-27): Orphaned Records Prevention (Duplicate by clip_path)
                         # 
@@ -1156,9 +1205,11 @@ class Scheduler:
                 clip_path = event.clip_path
                 clip_exists = False
                 
-                # Resolve path and check existence
+                # CRITICAL FIX (2025-11-30): event.clip_path is now always absolute from yamnet_processor
+                # However, during migration period, we may encounter old relative paths from DB
+                # Keep resolution logic for backwards compatibility during migration
                 if not os.path.isabs(clip_path):
-                    # Relative path - resolve from project root
+                    # Relative path (old data during migration) - resolve from project root
                     project_root = os.path.dirname(
                         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                     )
@@ -1166,7 +1217,7 @@ class Scheduler:
                         os.path.join(project_root, strip_leading_dot_slash(clip_path))
                     )
                 else:
-                    # Absolute path - use as-is
+                    # Absolute path (new format) - use as-is
                     resolved_path = clip_path
                 
                 clip_exists = os.path.exists(resolved_path)
@@ -1215,7 +1266,7 @@ class Scheduler:
                             "audio_segment_id": segment_id,
                             "timestamp": event_datetime.isoformat(),
                             "probability": event.probability,
-                            "clip_path": event.clip_path,  # Store original path from yamnet_processor
+                            "clip_path": event.clip_path,  # CRITICAL FIX (2025-11-30): Store absolute path (uniform format). event.clip_path is now absolute from yamnet_processor
                             "class_id": getattr(event, "class_id", None),
                             "class_name": getattr(event, "class_name", None),
                             "notes": "",

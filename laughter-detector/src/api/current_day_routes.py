@@ -8,7 +8,11 @@ Direct processing for current day audio without scheduler complexity.
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from ..api.dependencies import get_current_user
-from ..services.yamnet_processor import yamnet_processor
+# Lazy import to avoid TensorFlow crash on macOS startup
+def _get_yamnet_processor():
+    """Lazy import of yamnet_processor to avoid TensorFlow crash on startup."""
+    from ..services.yamnet_processor import yamnet_processor
+    return yamnet_processor
 from ..auth.supabase_auth import auth_service
 from supabase import create_client, Client
 import os
@@ -112,6 +116,7 @@ async def process_current_day(
                 
                 # Run YAMNet processing
                 print(f"🧠 Running YAMNet on {os.path.basename(decrypted_path)}")
+                yamnet_processor = _get_yamnet_processor()  # Lazy import to avoid TensorFlow crash
                 laughter_events = await yamnet_processor.process_audio_file(decrypted_path, user_id)
                 
                 if laughter_events:

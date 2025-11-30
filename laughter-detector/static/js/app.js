@@ -860,6 +860,12 @@ class LaughterDetectorApp {
                     console.warn(`Audio clip ${clipId} not found (404)`);
                     return null;
                 }
+                if (response.status === 401) {
+                    // Token expired - makeRequest() already handles 401 globally
+                    // Just return null here to avoid duplicate logout triggers
+                    console.warn(`Audio clip ${clipId} - token expired (401)`);
+                    return null;
+                }
                 throw new Error(`Failed to fetch audio: ${response.status}`);
             }
             

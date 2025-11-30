@@ -27,7 +27,7 @@ from ..models.laughter import (
     LaughterClass,
 )
 from ..auth.encryption import encryption_service
-from ..utils.path_utils import to_relative_upload_path
+# Removed to_relative_upload_path import - now using absolute paths uniformly
 
 logger = logging.getLogger(__name__)
 
@@ -452,11 +452,11 @@ class YAMNetProcessor:
                 logger.error(f"File creation failed: {clip_path} does not exist after sf.write()")
                 return None
 
-            # Normalize to portable ./uploads/... format so FastAPI and scripts can
-            # resolve the file consistently even when uploads live outside the repo.
-            clip_path = to_relative_upload_path(clip_path, settings.upload_dir)
+            # CRITICAL CHANGE (2025-11-30): Return absolute path for uniform path handling
+            # This eliminates complexity of handling both relative and absolute paths throughout the codebase
+            clip_path = os.path.abspath(clip_path)
 
-            # Return plaintext clip path (no encryption needed)
+            # Return plaintext absolute clip path (no encryption needed)
             return clip_path
 
         except Exception as e:

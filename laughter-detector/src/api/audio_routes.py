@@ -10,7 +10,11 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from ..auth.supabase_auth import auth_service
 from ..services.limitless_api import limitless_api_service
-from ..services.yamnet_processor import yamnet_processor
+# Lazy import to avoid TensorFlow crash on macOS startup
+def _get_yamnet_processor():
+    """Lazy import of yamnet_processor to avoid TensorFlow crash on startup."""
+    from ..services.yamnet_processor import yamnet_processor
+    return yamnet_processor
 from .dependencies import get_current_user
 from supabase import Client
 
@@ -104,6 +108,7 @@ async def process_daily_audio(
         laughter_count = 0
         for segment in segments:
             try:
+                yamnet_processor = _get_yamnet_processor()  # Lazy import to avoid TensorFlow crash
                 laughter_events = await yamnet_processor.process_audio_file(
                     segment.file_path, user["user_id"]
                 )

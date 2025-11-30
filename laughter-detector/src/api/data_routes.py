@@ -382,6 +382,16 @@ async def delete_laughter_detection(
         clip_path = detection_result.data[0]["clip_path"]
         print(f"📁 Clip path: {clip_path}")
 
+        # Convert relative paths to absolute (backwards compatibility during migration)
+        if not os.path.isabs(clip_path):
+            project_root = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            clip_path = os.path.normpath(
+                os.path.join(project_root, strip_leading_dot_slash(clip_path))
+            )
+            print(f"⚠️  Converted relative path to absolute: {clip_path}")
+
         # Delete the audio clip file if it exists (plaintext path, no decryption needed)
         import os
 
@@ -488,7 +498,8 @@ async def get_audio_clip(
             # Already plaintext, keep as is (or decryption failed - try as plaintext)
             pass
 
-        # Convert path to absolute path (handles both absolute and relative paths)
+        # CRITICAL FIX (2025-11-30): Simplify path handling - assume absolute paths
+        # After migration, all paths in DB will be absolute. During migration, handle old relative paths.
         # Ensure clip_path is still valid after decryption
         if not clip_path:
             print(f"❌ clip_path became empty after decryption for clip_id {clip_id}")
@@ -496,72 +507,18 @@ async def get_audio_clip(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Audio clip path is invalid",
             )
-            
-        # Make upload_dir absolute if it's relative (needed for both absolute and relative paths)
-        from ..config.settings import settings
-        upload_dir_abs = (
-            os.path.abspath(settings.upload_dir)
-            if not os.path.isabs(settings.upload_dir)
-            else settings.upload_dir
-        )
-
-        if os.path.isabs(clip_path):
-            # Absolute path - try as-is first (for backward compatibility with existing data)
-            if not os.path.exists(clip_path):
-                # CRITICAL FIX (2025-11-26): If absolute path doesn't exist, try to resolve it
-                # by extracting the relative part and resolving from upload_dir.
-                # This fixes "audio file not available" for old data with absolute paths.
-                if "uploads" in clip_path:
-                    # Extract path after "uploads/"
-                    parts = clip_path.split("uploads/")
-                    if len(parts) > 1:
-                        path_after_uploads = parts[1]
-                        candidate_path = os.path.normpath(
-                            os.path.join(upload_dir_abs, path_after_uploads)
-                        )
-                        if os.path.exists(candidate_path):
-                            clip_path = candidate_path
-                            print(f"✅ Resolved absolute path to: {clip_path}")
-                        else:
-                            print(f"❌ Audio file not found at absolute path: {clip_path}")
-                            print(f"   Also tried: {candidate_path}")
-                else:
-                    print(f"❌ Audio file not found: {clip_path}")
-        else:
-            # Path is relative, resolve using settings.upload_dir for consistency
-            # This ensures path resolution works regardless of how FastAPI is started
-            # (upload_dir_abs already defined above)
-
-            normalized_clip_path = clip_path
-            if normalized_clip_path.startswith("./"):
-                normalized_clip_path = strip_leading_dot_slash(normalized_clip_path)
-
-            uploads_marker = normalized_clip_path.find("uploads/")
-            if uploads_marker != -1:
-                path_after_uploads = normalized_clip_path[uploads_marker + len("uploads/") :]
-                candidate_path = os.path.normpath(
-                    os.path.join(upload_dir_abs, path_after_uploads)
-                )
-
-                if os.path.exists(candidate_path):
-                    clip_path = candidate_path
-                else:
-                    # Fallback to project root relative path (covers cases where FastAPI
-                    # was started from a different working directory, e.g. repo root)
-                    project_root = os.path.dirname(
-                        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    )
-                    alt_path = os.path.normpath(
-                        os.path.join(project_root, "uploads", path_after_uploads)
-                    )
-                    clip_path = alt_path
-            else:
-                # Fallback: resolve relative to project root without stripping "../"
-                project_root = os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )
-                normalized_path = strip_leading_dot_slash(clip_path)
-                clip_path = os.path.normpath(os.path.join(project_root, normalized_path))
+        
+        # Convert relative paths to absolute (backwards compatibility during migration)
+        # After migration is complete, all paths will be absolute and this can be removed
+        if not os.path.isabs(clip_path):
+            # Relative path (old data during migration) - resolve from project root
+            project_root = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            clip_path = os.path.normpath(
+                os.path.join(project_root, strip_leading_dot_slash(clip_path))
+            )
+            print(f"⚠️  Converted relative path to absolute: {clip_path}")
 
         # Check if file exists
         if not os.path.exists(clip_path):
