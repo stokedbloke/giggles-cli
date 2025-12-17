@@ -181,13 +181,13 @@ class LaughterDetectorApp {
                 // Check if user has Limitless API key configured
                 await this.checkUserStatus();
             } catch (error) {
-                // Token invalid or expired - clear auth and show login
+                // Token invalid or expired - clear auth and show auth section
                 console.error('❌ Auth check failed:', error);
                 this.clearAuth();
                 this.showAuthSection();
             }
         } else {
-            // No token - show login screen
+            // No token - show auth section (which includes intro)
             this.showAuthSection();
         }
     }
@@ -1050,20 +1050,24 @@ class LaughterDetectorApp {
         }, 5000);
     }
     
+
     /**
-     * Show login/registration screen. Hides all app screens.
-     * Called when user is not authenticated or session expires.
+     * Show login/registration screen. Hides all app screens and landing page.
+     * Called when user clicks "Get Started" or session expires.
      */
     showAuthSection() {
-        // Hide ALL app screens first
+        // Hide ALL app screens
         document.getElementById('app-section').classList.add('hidden');
         document.getElementById('daily-summary').classList.add('hidden');
         document.getElementById('day-detail').classList.add('hidden');
         document.getElementById('settings-screen').classList.add('hidden');
         document.getElementById('limitless-setup').classList.add('hidden');
         
-        // Show auth section (login/register forms)
+        // Show auth section (includes intro content and login/register forms)
         document.getElementById('auth-section').classList.remove('hidden');
+        
+        // Reset to login form (not register form)
+        this.showLoginForm();
     }
     
     /**

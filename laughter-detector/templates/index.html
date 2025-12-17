@@ -4,19 +4,95 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Giggle Gauge</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <!-- Inter Google Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=2">
 </head>
 <body>
     <div class="app-container">
-        <!-- Authentication Section -->
-        <div id="auth-section" class="section">
+        <!-- Authentication Section with Intro -->
+        <div id="auth-section" class="auth-section-with-intro">
             <div class="auth-container">
+                <!-- Intro Content -->
+                <div class="auth-intro-header">
+                    <h1 class="auth-intro-title">😊 Giggle Gauge</h1>
+                    <p class="auth-intro-tagline">Track your laughter, measure your joy</p>
+                </div>
+
+                <div class="auth-intro-content">
+                    <p class="auth-intro-text">
+                        Giggle Gauge uses AI to detect & count laughter from your voice, embodying your happiness though experiences of unplanned joy!
+                    </p>
+                </div>
+
+                <div class="auth-screenshots-container">
+                    <div class="auth-screenshot-item">
+                        <div class="screenshot-mockup screenshot-daily">
+                            <div class="mockup-header">
+                                <span class="mockup-icon">😊</span>
+                                <span class="mockup-title">Giggle Gauge</span>
+                                <span class="mockup-icon">+</span>
+                            </div>
+                            <div class="mockup-cards">
+                                <div class="mockup-card mockup-card-black">
+                                    <div class="mockup-card-day">Sunday Dec 14</div>
+                                    <div class="mockup-card-count">18</div>
+                                    <div class="mockup-card-label">giggles</div>
+                                </div>
+                                <div class="mockup-card mockup-card-orange">
+                                    <div class="mockup-card-day">Saturday Dec 13</div>
+                                    <div class="mockup-card-count">30</div>
+                                    <div class="mockup-card-label">giggles</div>
+                                </div>
+                                <div class="mockup-card mockup-card-blue">
+                                    <div class="mockup-card-day">Friday Dec 12</div>
+                                    <div class="mockup-card-count">7</div>
+                                    <div class="mockup-card-label">giggles</div>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="screenshot-caption">The Fitbit for laughs: daily counts at a glance</p>
+                    </div>
+                    <div class="auth-screenshot-item">
+                        <div class="screenshot-mockup screenshot-detail">
+                            <div class="mockup-header">
+                                <span class="mockup-back">← Back</span>
+                                <span class="mockup-date">Sunday, December 14, 2025</span>
+                            </div>
+                            <div class="mockup-filter">
+                                <span>Filter by probability: 0.3</span>
+                            </div>
+                            <div class="mockup-table">
+                                <div class="mockup-table-row">
+                                    <span class="mockup-play">▶</span>
+                                    <span class="mockup-time">10:10:50 AM</span>
+                                    <span class="mockup-class">Laughter</span>
+                                    <span class="mockup-prob">37.79</span>
+                                </div>
+                                <div class="mockup-table-row">
+                                    <span class="mockup-play">⏸</span>
+                                    <span class="mockup-time">10:11:07 AM</span>
+                                    <span class="mockup-class">Chuckle</span>
+                                    <span class="mockup-prob">38.6</span>
+                                </div>
+                                <div class="mockup-table-row">
+                                    <span class="mockup-play">▶</span>
+                                    <span class="mockup-time">10:12:51 AM</span>
+                                    <span class="mockup-class">Belly Laugh</span>
+                                    <span class="mockup-prob">34.8</span>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="screenshot-caption">Relive your laughter with audio playback</p>
+                    </div>
+                </div>
+
+                <!-- Auth Forms -->
                 <div id="login-form" class="auth-form">
-                    <h2>Welcome Back</h2>
+                    <h2>Sign In</h2>
                     <form id="login-form-element">
                         <div class="input-group">
                             <label for="login-email">Email</label>
@@ -53,6 +129,14 @@
                         <a href="#" id="show-login">Sign in</a>
                     </p>
                 </div>
+
+                <!-- Contact -->
+                <div class="auth-contact">
+                    <p>Inspired? Want to join the giggle gang? Reach out to us!</p>
+                    <p class="contact-email">
+                        <a href="mailto:hit.neil.up@gmail.com">hit.neil.up@gmail.com</a>
+                    </p>
+                </div>
             </div>
         </div>
 
@@ -81,6 +165,9 @@
                     </div>
                     <button type="submit" class="btn btn-primary">Save API Key</button>
                 </form>
+                <p class="auth-device-note">
+                    Don't have a supported device? Contact us at <a href="mailto:hit.neil.up@gmail.com">hit.neil.up@gmail.com</a>
+                </p>
             </div>
 
             <!-- Daily Summary -->
@@ -185,6 +272,6 @@
         <div id="toast-container" class="toast-container"></div>
     </div>
 
-    <script src="/static/js/app.js?v=24"></script>
+    <script src="/static/js/app.js?v=29"></script>
 </body>
 </html>

@@ -59,8 +59,14 @@ body {
 
 /* Authentication Styles */
 .auth-container {
-    max-width: 400px;
+    max-width: 900px;
     margin: 0 auto;
+}
+
+.auth-form {
+    margin-top: 40px;
+    padding-top: 40px;
+    border-top: 1px solid #e5e7eb;
 }
 
 .auth-form h2 {
@@ -116,6 +122,30 @@ body {
 }
 
 .auth-switch a:hover {
+    text-decoration: underline;
+}
+
+.auth-device-note {
+    text-align: center;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #e5e7eb;
+    color: #666;
+    font-size: 0.9rem;
+}
+
+.setup-container .auth-device-note {
+    margin-top: 30px;
+    padding-top: 30px;
+}
+
+.auth-device-note a {
+    color: #667eea;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.auth-device-note a:hover {
     text-decoration: underline;
 }
 
@@ -977,5 +1007,358 @@ th {
     .app-title {
         font-size: 16px;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+}
+
+/* ========================================
+   AUTH SECTION WITH INTRO STYLES
+   ======================================== */
+
+.auth-section-with-intro {
+    min-height: 100vh;
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+}
+
+.auth-container {
+    max-width: 900px;
+    width: 100%;
+    background: white;
+    border-radius: 20px;
+    padding: 40px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+
+.auth-intro-header {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.auth-intro-title {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: #333;
+    margin-bottom: 10px;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.auth-intro-tagline {
+    font-size: 1.1rem;
+    color: #666;
+    font-weight: 400;
+    margin: 0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.auth-intro-content {
+    margin-bottom: 30px;
+}
+
+.auth-intro-text {
+    font-size: 1rem;
+    line-height: 1.8;
+    color: #555;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.auth-screenshots-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 25px;
+    margin: 30px 0;
+}
+
+.auth-screenshot-item {
+    text-align: center;
+}
+
+.screenshot-img {
+    width: 100%;
+    max-width: 400px;
+    height: auto;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    margin-bottom: 12px;
+    border: 1px solid #e5e7eb;
+}
+
+/* Screenshot Mockups - CSS-based representations */
+.screenshot-mockup {
+    width: 100%;
+    max-width: 400px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    border: 1px solid #e5e7eb;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.screenshot-daily {
+    padding: 12px;
+}
+
+.mockup-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: white;
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 12px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.mockup-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+}
+
+.mockup-title {
+    flex: 1;
+    text-align: center;
+    color: #000;
+}
+
+.mockup-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.mockup-card {
+    border-radius: 12px;
+    padding: 16px;
+    position: relative;
+}
+
+.mockup-card-black {
+    background: #000;
+    color: white;
+}
+
+.mockup-card-orange {
+    background: #FF6B35;
+    color: #000;
+}
+
+.mockup-card-blue {
+    background: #1E3A8A;
+    color: white;
+}
+
+.mockup-card-day {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.mockup-card-count {
+    font-size: 64px;
+    font-weight: 900;
+    line-height: 0.9;
+    margin-bottom: 4px;
+}
+
+.mockup-card-label {
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.mockup-button {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 12px;
+    border-radius: 10px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 14px;
+    margin-top: 8px;
+}
+
+.screenshot-detail {
+    padding: 0;
+}
+
+.mockup-back {
+    color: #666;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.mockup-date {
+    flex: 1;
+    text-align: center;
+    font-size: 16px;
+    font-weight: 600;
+    color: #000;
+}
+
+.mockup-filter {
+    padding: 12px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #e5e7eb;
+    font-size: 13px;
+    color: #555;
+}
+
+.mockup-table {
+    padding: 8px;
+}
+
+.mockup-table-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px;
+    border-bottom: 1px solid #e5e7eb;
+    font-size: 13px;
+    gap: 8px;
+}
+
+.mockup-play {
+    color: #667eea;
+    font-size: 16px;
+    width: 20px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.mockup-time {
+    color: #333;
+    font-weight: 500;
+    flex: 1;
+}
+
+.mockup-class {
+    color: #666;
+    flex: 1;
+}
+
+.mockup-prob {
+    color: #667eea;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.screenshot-caption {
+    font-size: 0.9rem;
+    color: #666;
+    margin: 0;
+}
+
+.auth-contact {
+    text-align: center;
+    padding-top: 30px;
+    border-top: 1px solid #e5e7eb;
+    margin-top: 30px;
+}
+
+.auth-contact p {
+    margin: 8px 0;
+    color: #666;
+    font-size: 0.9rem;
+}
+
+.contact-email {
+    margin-top: 8px;
+}
+
+.contact-email a {
+    color: #667eea;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+.contact-email a:hover {
+    text-decoration: underline;
+}
+
+/* Responsive adjustments for auth section with intro */
+@media (max-width: 768px) {
+    .auth-intro-title {
+        font-size: 2rem;
+    }
+    
+    .auth-intro-tagline {
+        font-size: 1rem;
+    }
+    
+    .auth-container {
+        padding: 30px 20px;
+    }
+    
+    .auth-screenshots-container {
+        grid-template-columns: 1fr;
+        gap: 12px !important;
+        margin: 15px 0 !important;
+    }
+    
+    .screenshot-mockup {
+        max-width: 100%;
+    }
+    
+    .screenshot-caption {
+        font-size: 0.85rem;
+        margin-top: 6px;
+    }
+    
+    .mockup-header {
+        padding: 4px 6px !important;
+        margin-bottom: 6px !important;
+        font-size: 11px !important;
+    }
+    
+    .screenshot-daily {
+        padding: 6px !important;
+    }
+    
+    .mockup-cards {
+        gap: 8px !important;
+        margin-bottom: 8px !important;
+    }
+    
+    .mockup-card {
+        padding: 12px !important;
+    }
+    
+    .mockup-table-row {
+        padding: 8px !important;
+        font-size: 11px !important;
+    }
+    
+    .auth-intro-text {
+        font-size: 0.95rem;
+    }
+    
+}
+
+@media (max-width: 480px) {
+    .auth-section-with-intro {
+        padding: 20px 15px;
+    }
+    
+    .auth-intro-title {
+        font-size: 1.75rem;
+    }
+    
+    .auth-intro-tagline {
+        font-size: 0.95rem;
+    }
+    
+    .auth-container {
+        padding: 25px 15px;
     }
 }

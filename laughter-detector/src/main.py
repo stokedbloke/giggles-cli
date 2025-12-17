@@ -110,9 +110,18 @@ app.add_middleware(
 )
 
 # Add trusted host middleware
+# Allow all hosts in debug mode, or specific hosts + local IPs in production
+allowed_hosts = ["*"] if settings.debug else [
+    "localhost", 
+    "127.0.0.1", 
+    "10.0.0.211",  # Local network IP for mobile testing
+    "*.local",  # mDNS hostnames
+    "yourdomain.com", 
+    "*.yourdomain.com"
+]
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["*"] if settings.debug else ["localhost", "127.0.0.1", "yourdomain.com", "*.yourdomain.com"]
+    allowed_hosts=allowed_hosts
 )
 
 # Mount static files
