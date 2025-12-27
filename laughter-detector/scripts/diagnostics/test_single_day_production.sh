@@ -32,9 +32,9 @@ echo ""
 echo "Press Ctrl+C to cancel, or wait 5 seconds to continue..."
 sleep 5
 
-# Check if we're on production server (has .env.production)
-if [ ! -f ".env.production" ]; then
-    echo "❌ .env.production not found"
+# Check if we're on production server (has .env or .env.production)
+if [ ! -f ".env" ] && [ ! -f ".env.production" ]; then
+    echo "❌ Neither .env nor .env.production found"
     echo "   This script should be run on production server"
     exit 1
 fi
@@ -54,7 +54,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import os
 from dotenv import load_dotenv
-load_dotenv(".env.production")
+from pathlib import Path
+
+# Try .env.production first, fall back to .env
+env_file = Path(".env.production")
+if not env_file.exists():
+    env_file = Path(".env")
+load_dotenv(env_file)
 
 # Fix httpx compatibility issue with supabase-py
 from src.utils.httpx_patch import enable_proxy_keyword_compat
@@ -124,7 +130,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import os
 from dotenv import load_dotenv
-load_dotenv(".env.production")
+from pathlib import Path
+
+# Try .env.production first, fall back to .env
+env_file = Path(".env.production")
+if not env_file.exists():
+    env_file = Path(".env")
+load_dotenv(env_file)
 
 # Fix httpx compatibility issue with supabase-py
 from src.utils.httpx_patch import enable_proxy_keyword_compat
