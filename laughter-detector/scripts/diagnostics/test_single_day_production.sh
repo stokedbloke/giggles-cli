@@ -39,6 +39,10 @@ if [ ! -f ".env" ] && [ ! -f ".env.production" ]; then
     exit 1
 fi
 
+# Activate venv (needed for Python imports)
+cd /var/lib/giggles/giggles-cli/laughter-detector
+source venv_linux/bin/activate
+
 echo ""
 echo "📊 Step 1: Recording BEFORE metrics..."
 python3 << PYEOF
@@ -107,8 +111,6 @@ echo ""
 echo "🔄 Step 2: Reprocessing $DATE for user $USER_ID..."
 echo "   (This will take a few minutes)"
 
-cd /var/lib/giggles/giggles-cli/laughter-detector
-source venv_linux/bin/activate
 python3 scripts/maintenance/manual_reprocess_yesterday.py "$DATE" "$DATE" --user-id "$USER_ID"
 
 echo ""
