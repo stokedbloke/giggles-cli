@@ -175,21 +175,22 @@ class LimitlessAPIService:
             )  # May be None if not in processing context
 
             async with aiohttp.ClientSession() as session:
-                # RETRY LOGIC (2025-11-20): Retry gateway errors (502/503/504) with exponential backoff
+                # RETRY LOGIC (2025-11-20, updated 2025-12-22): Retry server/gateway errors (500/502/503/504) with exponential backoff
                 # 
                 # WHY THIS IS NEEDED:
-                # - Limitless API occasionally returns transient gateway errors (502/503/504)
-                # - These are usually temporary network issues or API overload
+                # - Limitless API occasionally returns transient server errors (500) and gateway errors (502/503/504)
+                # - 500 errors are often transient (server overload, temporary DB issues) and can recover with retry
+                # - Gateway errors are usually temporary network issues or API overload
                 # - Without retry logic, these errors cause data loss (chunks are skipped)
                 # 
                 # RETRY STRATEGY:
                 # - Max 3 retries with exponential backoff (2s, 4s, 8s delays)
-                # - Only retries gateway errors (502/503/504), not other errors
+                # - Retries server errors (500) and gateway errors (502/503/504)
                 # - After 3 failed retries, chunk is skipped and logged
                 # 
                 # IMPACT:
-                # - Recovers from ~80% of transient API errors
-                # - Prevents data loss from temporary network issues
+                # - Recovers from ~80% of transient API errors (including transient 500s)
+                # - Prevents data loss from temporary server issues
                 # - Improves reliability of nightly processing
                 max_retries = 3
                 retry_delays = [2, 4, 8]  # Exponential backoff: 2s, 4s, 8s
@@ -247,17 +248,22 @@ class LimitlessAPIService:
                                         error="No audio data available",
                                     )
                                 return []
-                            elif response.status in [502, 503, 504]:
-                                # Gateway errors - retry with exponential backoff
+                            elif response.status in [500, 502, 503, 504]:
+                                # Server errors (500) and gateway errors (502/503/504) - retry with exponential backoff
+                                # FIX (2025-12-22): Added 500 to retry logic - many 500 errors are transient
+                                # (server overload, temporary DB issues) and can recover with retry
                                 if retry_count < max_retries:
                                     retry_count += 1
-                                    continue  # Retry the request
+                                    print(
+                                        f"⚠️ Limitless API returned {response.status} for {start_iso} to {end_iso} - will retry (attempt {retry_count}/{max_retries})"
+                                    )
+                                    continue  # Retry the request (delay happens at start of next loop iteration)
                                 else:
                                     # Exhausted retries - log and skip
                                     print(
                                         f"⚠️ Limitless API returned {response.status} for {start_iso} to {end_iso} after {max_retries} retries - skipping this chunk"
                                     )
-                                    # Record the gateway error for audit trail
+                                    # Record the error for audit trail
                                     if enhanced_logger:
                                         enhanced_logger.add_api_call(
                                             endpoint="download-audio",
@@ -268,7 +274,7 @@ class LimitlessAPIService:
                                                 "startMs": params["startMs"],
                                                 "endMs": params["endMs"],
                                             },
-                                            error=f"Gateway error after {max_retries} retries: {response.status}",
+                                            error=f"Server/gateway error after {max_retries} retries: {response.status}",
                                         )
                                     return []
                             elif response.status == 200:
