@@ -8,6 +8,10 @@ Use this to find the best days to test retry logic.
 Usage:
     # On MacBook - uses .env.production
     python scripts/diagnostics/analyze_production_500s_readonly.py --days 60
+    
+    # On Production VPS - activate venv first
+    source venv_linux/bin/activate
+    python scripts/diagnostics/analyze_production_500s_readonly.py --days 60
 """
 
 import sys
