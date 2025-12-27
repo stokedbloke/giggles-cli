@@ -56,6 +56,10 @@ import os
 from dotenv import load_dotenv
 load_dotenv(".env.production")
 
+# Fix httpx compatibility issue with supabase-py
+from src.utils.httpx_patch import enable_proxy_keyword_compat
+enable_proxy_keyword_compat()
+
 from supabase import create_client
 
 SUPABASE_URL = os.getenv('SUPABASE_URL')
@@ -121,6 +125,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import os
 from dotenv import load_dotenv
 load_dotenv(".env.production")
+
+# Fix httpx compatibility issue with supabase-py
+from src.utils.httpx_patch import enable_proxy_keyword_compat
+enable_proxy_keyword_compat()
 
 from supabase import create_client
 

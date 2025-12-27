@@ -33,6 +33,10 @@ else:
     print(f"⚠️  {prod_env} not found - using default .env")
     load_dotenv()
 
+# Fix httpx compatibility issue with supabase-py
+from src.utils.httpx_patch import enable_proxy_keyword_compat
+enable_proxy_keyword_compat()
+
 from supabase import create_client
 
 def get_production_client():
